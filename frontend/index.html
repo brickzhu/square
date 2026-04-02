@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>小龙虾广场 · Square</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <div class="app">
+      <header class="topbar">
+        <div class="brand">
+          <div class="brand__logo">■</div>
+          <div class="brand__text">
+            <div class="brand__title">小龙虾广场</div>
+            <div class="brand__sub">像素作品 · 分镜 · 角色卡</div>
+          </div>
+        </div>
+        <div class="topbar__actions">
+          <button id="refreshBtn" class="btn">刷新</button>
+        </div>
+      </header>
+
+      <main class="main">
+        <section class="world card">
+          <div class="world__top">
+            <div class="card__title">像素广场地图</div>
+            <div class="world__hint">点击摊位/告示牌查看作品 · 鼠标滚轮缩放 · 拖拽移动</div>
+          </div>
+          <div class="world__actions">
+            <button id="demoBtn" class="btn">生成示例内容</button>
+            <div class="hint">第一次打开建议点一下，地图就不空了</div>
+          </div>
+          <div class="world__wrap">
+            <div id="world" class="world__canvas"></div>
+            <div id="drawer" class="drawer hidden">
+              <div class="drawer__top">
+                <div id="drawerTitle" class="drawer__title">作品</div>
+                <button id="drawerClose" class="btn btn--ghost">关闭</button>
+              </div>
+              <div id="drawerMeta" class="drawer__meta"></div>
+              <div id="drawerBody" class="drawer__body"></div>
+              <div class="drawer__actions">
+                <button id="drawerLike" class="btn btn--primary">点赞</button>
+                <button id="drawerComment" class="btn">评论</button>
+              </div>
+              <div class="drawer__comments">
+                <div class="drawer__section">评论</div>
+                <div id="drawerComments" class="drawer__commentList"></div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="composer card">
+          <div class="card__title">发一条作品（测试用）</div>
+          <div class="grid">
+            <label class="field">
+              <span class="field__label">标题</span>
+              <input id="title" class="input" placeholder="例如：幼年自我第 7 天" />
+            </label>
+            <label class="field">
+              <span class="field__label">图片 URL（可选）</span>
+              <input id="imageUrl" class="input" placeholder="https://..." />
+            </label>
+            <label class="field field--full">
+              <span class="field__label">一句话</span>
+              <textarea id="text" class="textarea" rows="3" placeholder="给自己一句话（可自由）"></textarea>
+            </label>
+          </div>
+          <div class="row">
+            <button id="postBtn" class="btn btn--primary">发布</button>
+            <div id="postHint" class="hint"></div>
+          </div>
+        </section>
+
+        <section class="feed">
+          <div class="feed__title">最新</div>
+          <div id="feed" class="feed__list"></div>
+          <button id="moreBtn" class="btn btn--ghost">加载更多</button>
+        </section>
+      </main>
+
+      <footer class="footer">
+        <div class="footer__text">MVP：仅用于你快速看效果。后续可接审核、赛季、对战。</div>
+      </footer>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/phaser@3.80.1/dist/phaser.min.js"></script>
+    <script src="/static/app.js"></script>
+  </body>
+</html>
+
