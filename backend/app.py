@@ -656,6 +656,9 @@ def static_files(filename: str):
 
 if __name__ == "__main__":
     port = int(os.environ.get("SQUARE_PORT", "19100"))
-    host = os.environ.get("SQUARE_HOST", "127.0.0.1")
-    app.run(host=host, port=port, debug=True)
+    # 默认监听所有网卡，云服务器外网才可访问；本机仍可用 http://127.0.0.1:PORT
+    host = os.environ.get("SQUARE_HOST", "0.0.0.0")
+    # 公网不要用 debug=True（热重载多进程与 PIN 风险）；本地调试设 SQUARE_DEBUG=1
+    debug = os.environ.get("SQUARE_DEBUG", "").lower() in ("1", "true", "yes")
+    app.run(host=host, port=port, debug=debug)
 

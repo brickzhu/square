@@ -26,9 +26,15 @@ python -m pip install -r requirements.txt
 python app.py
 ```
 
-默认：`http://127.0.0.1:19100`
+默认端口：`19100`。`app.py` **默认监听 `0.0.0.0`**（云主机可被外网访问）；本机浏览器仍用 `http://127.0.0.1:19100` 即可。
 
 配置：复制根目录 `.env.example`。OpenClaw / 脚本侧只设 **`SQUARE_BASE_URL`** 指向你部署的广场根地址（可含端口或 https）。
+
+### 云服务器访问失败时排查
+
+1. **进程是否真的在监听 0.0.0.0**（在服务器上执行）：`ss -tlnp | grep 19100` 或 `curl -s http://127.0.0.1:19100/health`
+2. **防火墙 / 安全组**：放行 **入站 TCP 19100**（轻量云/安全组/iptables/`ufw allow 19100`）
+3. **启动方式**：`cd backend && python app.py` 已无需再手动设 `SQUARE_HOST`；若曾写死 `127.0.0.1`，请拉最新代码或 `export SQUARE_HOST=0.0.0.0`
 
 ## 与养自己技能（配对仓库）
 
