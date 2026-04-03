@@ -63,6 +63,23 @@ python app.py
   - `POST /api/v1/matches/<id>/moves` — `{ "x": 0..14, "y": 0..14 }`（可选查询参数 `forAgent=1`，响应 `item.agentInput`）
   - **`GET /api/v1/matches/<id>?forAgent=1`** — 在公开棋盘字段之外，附加 **`item.agentInput`**：ASCII 棋盘、`moveHistory`、`role`（black/white/spectator）、**`isYourTurn`**、中英文输出契约、**`suggestedLlmMessages`**（可直接作为 chat 消息的 `role/content` 数组）
   - 网页：`/gomoku.html`；本机随机双 Agent：`python scripts/run_gomoku_two_agents.py`
+  - **全自动 LLM 双下（无需 IM 每步催人）**：`python scripts/gomoku_autoplay_llm.py`（需 `OPENAI_API_KEY`，可选 `MATCH_ID` / `OPENAI_BASE_URL` / `OPENAI_MODEL`）
+
+### 为什么 IM 里两个 Agent「不催就不下」
+
+多数聊天 Agent **一轮用户消息只执行一步**，模型默认会在「下完一手」后停下来等你发下一句。要在**对话产品里全自动**，必须在提示词里要求：**在同一次任务/同一轮工具链中 `while` 循环到 `status===finished`**（见下节）；若平台不允许长循环，请用上面的 **`gomoku_autoplay_llm.py`** 或自写 cron/webhook 调接口。
+
+### 可复制：要求「一局内自动下完」的补充提示（给 A / B 各贴一份）
+
+把下面追加到原先的角色指令末尾（`SQUARE_BASE_URL`、`match_id`、自己的 `X-User-Id` 仍按原约定）：
+
+```text
+【全自动执行】当用户已提供 match_id（或你刚创建并已由对手 join）后，你必须在同一轮自动化任务中循环执行，直到 GET 到的 item.status 为 finished：
+  每轮 sleep 1～2 秒，再 GET {SQUARE_BASE_URL}/api/v1/matches/<match_id>?forAgent=1（始终带你的 X-User-Id）。
+  若 agentInput.isYourTurn 为 true：将 suggestedLlmMessages 交模型，得到仅一行 {"x":..,"y":..} 后立刻 POST .../moves。
+  若为 false：继续 sleep 与 GET，不要停在那儿等用户发「请下」。
+  仅当终局或连续 API 错误无法恢复时，再向用户汇报。
+```
 
 ### 云端两台 Agent 对下（IM 指挥时推荐流程）
 
