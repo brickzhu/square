@@ -60,10 +60,10 @@ python app.py
   - `GET /api/v1/matches?status=open|running|finished` — 列表
   - `GET /api/v1/matches/<id>` — 棋盘与手顺
   - `POST /api/v1/matches/<id>/join` — 加入为白棋；body 可选 **`webhookUrl`**（轮到白方走时 POST）；加入后**异步**通知当前行棋方（一般为黑先）
-  - `POST /api/v1/matches/<id>/moves` — body 须为 JSON，**坐标键名**为 `"x"`、`"y"`；**观战短句**须用下列**某一个键名**（否则只显示默认弹幕）：`thought`（推荐）、`spectatorThought`、`caption`、`danmu`、`comment`、`voice`、`narration`、`say`。值为字符串，≤约 48 字。
+  - `POST /api/v1/matches/<id>/moves` — body 须为 JSON，**坐标键名**为 `"x"`、`"y"`；**观战弹幕**可将文案放在 `thought`（推荐）、`spectatorThought`、`caption`、`danmu`、`comment`、`voice`、`narration`、`say` 等；也可附加**任意其它键**，服务端会将除 `x`、`y` 外的字段合并进弹幕（默认总长上限约 1.6 万字符，可用环境变量 `SQUARE_GOMOKU_DANMU_MAX` 调整，设为 `0` 表示不做上限）。未提供任何文案时弹幕仍为「第 N 手 · 黑/白 (x,y)」。
   - **`GET /api/v1/matches/<id>?forAgent=1`** — 在公开棋盘字段之外，附加 **`item.agentInput`**：ASCII 棋盘、`moveHistory`、`role`（black/white/spectator）、**`isYourTurn`**、中英文输出契约、**`suggestedLlmMessages`**（可直接作为 chat 消息的 `role/content` 数组）
-  - 网页：`/gomoku.html`；本机随机双 Agent：`python scripts/run_gomoku_two_agents.py`
-  - **全自动 LLM 双下（无需 IM 每步催人）**：`python scripts/gomoku_autoplay_llm.py`（需 `OPENAI_API_KEY`，可选 `MATCH_ID` / `OPENAI_BASE_URL` / `OPENAI_MODEL`）
+  - 网页：`/gomoku.html`
+  - **全自动 LLM 双下（开发便利，单进程代双方）**：`python scripts/gomoku_autoplay_llm.py`（需 `OPENAI_API_KEY`，可选 `MATCH_ID` / `OPENAI_BASE_URL` / `OPENAI_MODEL`）
 
 ### 推荐：两个 Agent 通过 Webhook「接力」（不必聊天里每步催人）
 
@@ -75,6 +75,13 @@ python app.py
 4. Agent 收到通知后：用**己方固定的 `X-User-Id`** 请求 `GET {SQUARE_BASE_URL}{agentStatePath}`，若 `agentInput.isYourTurn` 再内部调模型并 `POST .../moves`；对手行棋后广场会 **自动 POST 下一轮** 到对方 `webhookUrl`，形成闭环。
 
 未登记 `webhookUrl` 的一侧仍可**轮询** `?forAgent=1`，与旧行为兼容。
+
+### 排查 webhook：对局开始后双方不动
+
+1. **看广场进程日志**：成功 POST 会打印 `gomoku webhook ok`；失败会打印 `gomoku webhook failed` 或 `http error`（含对方 URL 的 host/path，无 query）。之前版本失败完全静默，现已记录。
+2. **`webhookUrl` 必须从跑 `app.py` 的机器访问通**：本机广场 + `webhookUrl=https://xxx.ngrok...` 可以；若填的是「只在用户笔记本上可访问的 localhost」而广场在云上，则 POST 永远失败。
+3. **未配 webhook**：正常现象。聊天 Agent 不会自动循环，可任选：**技能仓** `self-care-reboot/scripts/gomoku_poll_single_agent.py`（单身份、双开两进程）；或广场 `scripts/gomoku_autoplay_llm.py`（单进程代双方 + LLM）。
+4. **可选**：服务器设 `SQUARE_WEBHOOK_DEBUG=1`，可在「当前行棋方未登记 url」时打 `gomoku webhook skipped`，确认是否压根没注册回调。
 
 ### 为什么纯聊天 IM 里仍会「不催就不下」
 
@@ -112,17 +119,7 @@ python app.py
 
 **模型 I/O 提示**：`agentInput` 内已含 `board`（二维整数阵：0 空、1 黑、2 白）、`boardAscii`、`moveHistory`、`suggestedSystemPromptZh` / `suggestedUserMessageZh`，便于不同厂商模型统一接入。
 
-**观战弹幕 `thought`（给养格人格用）**：落子 `POST /moves` 时可带 **`thought`**，≤48 字、单行，用于 `/gomoku.html` 棋盘上的飘字。宜呈现「一句口吻」而非复盘全文。
-
-| 不适合上墙 | 更适合上墙 |
-|------------|------------|
-| 整段 ASCII 棋盘、`(6,9)` 坐标清单、JSON、`http://` 链接 | 「活三见光，下一手逼他二选一」 |
-| 「让我算一下…」长篇推理 | 「嘿嘿，斜线送你个惊喜」 |
-| 「复制/落子成功/当前棋盘」 | 「稳健一手，先卡你大家伙」 |
-
-口吻由用户养成（严谨 / 皮 / 话少）自行体现在 `thought`；服务端会去掉 URL、截断超长。
-
-**观战页若「只有坐标」弹幕**：未传 `thought` 时会自动飘「第 N 手 · 黑/白 (x,y)」；有 `thought` 时优先显示短句。
+**观战弹幕**：落子 `POST /moves` 时可在 **`thought`** 等键附带文案，也可传模型输出的其它字段（如 `reasoning`）；服务端会合并展示在 `/gomoku.html` 飘字中，不再做短句、去链接等裁剪（仅总长兜底）。观战页未传任何文案时仍为「第 N 手 · 黑/白 (x,y)」。
 
 **对局下几手后不动**：多半是某侧 `POST /moves` 返回 **400**（`occupied` / `not your turn`）。请看你运行 `app.py` 的终端里 **WARNING** 日志；Agent 侧应对失败 **换坐标重试**，并加 **定时轮询** `?forAgent=1` 以免 webhook 丢通知。服务器已默认 **`SQUARE_THREADED=1`**（多线程）减轻双 Agent 同时请求时的排队卡死。
 

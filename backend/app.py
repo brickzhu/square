@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import os
 import re
 import secrets
@@ -11,6 +12,7 @@ import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
+from urllib.parse import urlparse
 from pathlib import Path
 from typing import Any
 
@@ -30,6 +32,18 @@ MAX_INLINE_IMAGE_BYTES = 2 * 1024 * 1024
 _UPLOAD_NAME_RE = re.compile(r"^img_[0-9a-f]{16}\.(png|jpg|jpeg|gif|webp)$", re.IGNORECASE)
 
 GOMOKU_SIZE = 15
+
+_gomoku_webhook_log = logging.getLogger("square.gomoku.webhook")
+
+
+def _webhook_url_for_log(url: str) -> str:
+    try:
+        p = urlparse(url)
+        if p.netloc:
+            return f"{p.scheme}://{p.netloc}{p.path}"
+    except ValueError:
+        pass
+    return (url or "")[:96]
 
 
 def now_ms() -> int:
@@ -75,14 +89,60 @@ def sanitize_text(s: str, *, max_len: int = 200) -> str:
     return s
 
 
-def _sanitize_spectator_thought(s: str, *, max_len: int = 48) -> str:
-    """观战弹幕：单行、无链接、短句，避免整段推理与棋盘刷屏。"""
-    raw = (s or "").replace("\r", " ").replace("\n", " ")
-    raw = re.sub(r"https?://\S+", "", raw, flags=re.IGNORECASE)
-    raw = re.sub(r"\s+", " ", raw).strip()
-    if len(raw) > max_len:
-        raw = raw[:max_len].rstrip("，。！？、 ") + "…"
-    return raw
+_THOUGHT_LIKE_KEYS: tuple[str, ...] = (
+    "thought",
+    "spectatorThought",
+    "caption",
+    "danmu",
+    "comment",
+    "voice",
+    "narration",
+    "say",
+)
+_MOVE_BODY_COORD_KEYS = frozenset({"x", "y"})
+
+
+def _format_move_danmu_from_body(body: dict[str, Any]) -> str:
+    """将落子 JSON 中除坐标外的字段合并为观战弹幕（保留 Agent 原文，仅做换行压平与总长兜底）。"""
+    parts: list[str] = []
+    thought_like = frozenset(_THOUGHT_LIKE_KEYS)
+    for key in _THOUGHT_LIKE_KEYS:
+        v = body.get(key)
+        if v is None:
+            continue
+        s = str(v).strip()
+        if s:
+            parts.append(s)
+    for key, v in body.items():
+        if key in _MOVE_BODY_COORD_KEYS or key in thought_like:
+            continue
+        if v is None:
+            continue
+        if isinstance(v, (dict, list)):
+            try:
+                raw = json.dumps(v, ensure_ascii=False)
+            except (TypeError, ValueError):
+                raw = str(v)
+        elif isinstance(v, bool):
+            raw = "true" if v else "false"
+        elif isinstance(v, (int, float)):
+            raw = str(v)
+        else:
+            raw = str(v).strip()
+        if not str(raw).strip():
+            continue
+        parts.append(f"{key}: {raw}")
+    merged = " | ".join(parts)
+    merged = merged.replace("\r\n", "\n").replace("\r", "\n")
+    merged = re.sub(r"\n+", " ", merged)
+    merged = re.sub(r"[ \t]+", " ", merged).strip()
+    try:
+        max_len = int(os.environ.get("SQUARE_GOMOKU_DANMU_MAX", "16000"))
+    except ValueError:
+        max_len = 16000
+    if max_len > 0 and len(merged) > max_len:
+        merged = merged[: max_len - 1] + "…"
+    return merged
 
 
 def _sanitize_webhook_url(url: str) -> str:
@@ -101,7 +161,7 @@ def _public_player(side: dict[str, Any] | None) -> dict[str, Any] | None:
 
 
 def _notify_turn_webhook(match: dict[str, Any]) -> None:
-    """主动通知「下一手行棋方」：由其在自有运行时里拉 forAgent 并下子。失败静默。"""
+    """主动通知「下一手行棋方」：由其在自有运行时里拉 forAgent 并下子。失败写入日志（供排查）。"""
     if match.get("status") != "running":
         return
     uid = match.get("nextPlayerUserId")
@@ -115,6 +175,12 @@ def _notify_turn_webhook(match: dict[str, Any]) -> None:
         url = str(w.get("webhookUrl") or "").strip()
     url = _sanitize_webhook_url(url)
     if not url:
+        if os.environ.get("SQUARE_WEBHOOK_DEBUG", "").lower() in ("1", "true", "yes"):
+            _gomoku_webhook_log.info(
+                "gomoku webhook skipped (no webhookUrl) match=%s nextPlayer=%s",
+                match.get("id"),
+                uid,
+            )
         return
     payload = {
         "event": "gomoku.your_turn",
@@ -127,12 +193,33 @@ def _notify_turn_webhook(match: dict[str, Any]) -> None:
     sec = os.environ.get("SQUARE_WEBHOOK_SECRET", "").strip()
     if sec:
         headers["X-Square-Webhook-Secret"] = sec
+    safe_url = _webhook_url_for_log(url)
     try:
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         req = urllib.request.Request(url, data=data, headers=headers, method="POST")
-        urllib.request.urlopen(req, timeout=12)
-    except (urllib.error.URLError, urllib.error.HTTPError, OSError, ValueError):
-        pass
+        with urllib.request.urlopen(req, timeout=12) as resp:
+            code = getattr(resp, "status", None) or resp.getcode()
+        _gomoku_webhook_log.info("gomoku webhook ok match=%s url=%s http=%s", match["id"], safe_url, code)
+    except urllib.error.HTTPError as e:
+        body = ""
+        try:
+            body = e.read().decode("utf-8", errors="replace")[:200]
+        except OSError:
+            pass
+        _gomoku_webhook_log.warning(
+            "gomoku webhook http error match=%s url=%s code=%s body=%r",
+            match["id"],
+            safe_url,
+            e.code,
+            body,
+        )
+    except (urllib.error.URLError, OSError, ValueError) as e:
+        _gomoku_webhook_log.warning(
+            "gomoku webhook failed match=%s url=%s: %s",
+            match["id"],
+            safe_url,
+            e,
+        )
 
 
 def _notify_turn_async(match_id: str) -> None:
@@ -259,8 +346,8 @@ def _agent_input_bundle(match: dict[str, Any], viewer_uid: str) -> dict[str, Any
 
     output_contract_zh = (
         "若「是否轮到你」为 true：由你的运行时代码向广场发 POST /moves，body 为 JSON，必须含 x、y；"
-        "观战弹幕短句放在键 **thought**（或 caption / danmu / comment / voice / narration / say 任一），"
-        "值为一句中文，≤48字。勿把长推理放进该字段。"
+        "可将解说、推理或其它说明放在 **thought**（或 caption / danmu / comment / voice / narration / say），"
+        "也可在 body 中使用其它自定义键；除 x、y 外的字段会合并展示在观战页弹幕（过长时服务端按上限截取）。"
         "若轮不到你：不要 POST 落子。"
     )
     output_contract_en = (
@@ -729,22 +816,7 @@ def play_move(match_id: str):
     board[y][x] = stone
     m["board"] = board
     hist = m.setdefault("moveHistory", [])
-    thought_raw = None
-    for key in (
-        "thought",
-        "spectatorThought",
-        "caption",
-        "danmu",
-        "comment",
-        "voice",
-        "narration",
-        "say",
-    ):
-        v = body.get(key)
-        if v is not None and str(v).strip():
-            thought_raw = v
-            break
-    thought_clean = _sanitize_spectator_thought(str(thought_raw)) if thought_raw else ""
+    danmu_text = _format_move_danmu_from_body(body)
     entry: dict[str, Any] = {
         "index": len(hist),
         "userId": uid,
@@ -753,8 +825,8 @@ def play_move(match_id: str):
         "stone": stone,
         "atMs": now_ms(),
     }
-    if thought_clean:
-        entry["thought"] = thought_clean
+    if danmu_text:
+        entry["thought"] = danmu_text
     hist.append(entry)
 
     if _gomoku_check_win(board, y, x, stone):
