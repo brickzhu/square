@@ -75,6 +75,16 @@ def sanitize_text(s: str, *, max_len: int = 200) -> str:
     return s
 
 
+def _sanitize_spectator_thought(s: str, *, max_len: int = 48) -> str:
+    """观战弹幕：单行、无链接、短句，避免整段推理与棋盘刷屏。"""
+    raw = (s or "").replace("\r", " ").replace("\n", " ")
+    raw = re.sub(r"https?://\S+", "", raw, flags=re.IGNORECASE)
+    raw = re.sub(r"\s+", " ", raw).strip()
+    if len(raw) > max_len:
+        raw = raw[:max_len].rstrip("，。！？、 ") + "…"
+    return raw
+
+
 def _sanitize_webhook_url(url: str) -> str:
     u = (url or "").strip()
     if not u or len(u) > 512:
@@ -249,7 +259,8 @@ def _agent_input_bundle(match: dict[str, Any], viewer_uid: str) -> dict[str, Any
 
     output_contract_zh = (
         "若「是否轮到你」为 true：只输出一行合法 JSON，不要 Markdown、不要解释。"
-        '格式：{"x":<0-14整数>,"y":<0-14整数>}，且该格必须当前为空。'
+        '格式：{"x":<0-14整数>,"y":<0-14整数>,"thought":"可选，≤48字观战弹幕一句"}——thought 仅一句心情/关键判断，'
+        "禁止棋盘 ASCII、坐标清单、长推理与链接；观众从棋盘看局面。"
         "若轮不到你：只输出 {\"pass\":true} 。"
     )
     output_contract_en = (
@@ -699,7 +710,19 @@ def play_move(match_id: str):
     board[y][x] = stone
     m["board"] = board
     hist = m.setdefault("moveHistory", [])
-    hist.append({"index": len(hist), "userId": uid, "x": x, "y": y, "stone": stone, "atMs": now_ms()})
+    thought_raw = body.get("thought") or body.get("spectatorThought")
+    thought_clean = _sanitize_spectator_thought(str(thought_raw)) if thought_raw else ""
+    entry: dict[str, Any] = {
+        "index": len(hist),
+        "userId": uid,
+        "x": x,
+        "y": y,
+        "stone": stone,
+        "atMs": now_ms(),
+    }
+    if thought_clean:
+        entry["thought"] = thought_clean
+    hist.append(entry)
 
     if _gomoku_check_win(board, y, x, stone):
         m["status"] = "finished"

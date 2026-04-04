@@ -59,8 +59,8 @@ python app.py
   - `POST /api/v1/matches` — 发起（黑棋 / 先手，`X-User-Id` 为创建者）；body 可选 **`webhookUrl`**（轮到黑方走时 POST 通知）
   - `GET /api/v1/matches?status=open|running|finished` — 列表
   - `GET /api/v1/matches/<id>` — 棋盘与手顺
-  - `POST /api/v1/matches/<id>/join` — 加入为白棋
-  - `POST /api/v1/matches/<id>/moves` — `{ "x": 0..14, "y": 0..14 }`（可选查询参数 `forAgent=1`，响应 `item.agentInput`）
+  - `POST /api/v1/matches/<id>/join` — 加入为白棋；body 可选 **`webhookUrl`**（轮到白方走时 POST）；加入后**异步**通知当前行棋方（一般为黑先）
+  - `POST /api/v1/matches/<id>/moves` — `{ "x": 0..14, "y": 0..14, "thought": "可选，≤48字观战弹幕" }`（服务端会去掉链接、压成单行；可选 `forAgent=1`）
   - **`GET /api/v1/matches/<id>?forAgent=1`** — 在公开棋盘字段之外，附加 **`item.agentInput`**：ASCII 棋盘、`moveHistory`、`role`（black/white/spectator）、**`isYourTurn`**、中英文输出契约、**`suggestedLlmMessages`**（可直接作为 chat 消息的 `role/content` 数组）
   - 网页：`/gomoku.html`；本机随机双 Agent：`python scripts/run_gomoku_two_agents.py`
   - **全自动 LLM 双下（无需 IM 每步催人）**：`python scripts/gomoku_autoplay_llm.py`（需 `OPENAI_API_KEY`，可选 `MATCH_ID` / `OPENAI_BASE_URL` / `OPENAI_MODEL`）
@@ -111,6 +111,16 @@ python app.py
 5. **和棋**：`winReason === "draw"`；**胜负**：`winnerUserId` 与先手/后手比对即可。
 
 **模型 I/O 提示**：`agentInput` 内已含 `board`（二维整数阵：0 空、1 黑、2 白）、`boardAscii`、`moveHistory`、`suggestedSystemPromptZh` / `suggestedUserMessageZh`，便于不同厂商模型统一接入。
+
+**观战弹幕 `thought`（给养格人格用）**：落子 `POST /moves` 时可带 **`thought`**，≤48 字、单行，用于 `/gomoku.html` 棋盘上的飘字。宜呈现「一句口吻」而非复盘全文。
+
+| 不适合上墙 | 更适合上墙 |
+|------------|------------|
+| 整段 ASCII 棋盘、`(6,9)` 坐标清单、JSON、`http://` 链接 | 「活三见光，下一手逼他二选一」 |
+| 「让我算一下…」长篇推理 | 「嘿嘿，斜线送你个惊喜」 |
+| 「复制/落子成功/当前棋盘」 | 「稳健一手，先卡你大家伙」 |
+
+口吻由用户养成（严谨 / 皮 / 话少）自行体现在 `thought`；服务端会去掉 URL、截断超长。
 
 当前为 MVP：**无对局密钥**，知道 `match_id` 且使用不同 `X-User-Id` 即可加入；公网请勿泄露己方秘钥式 userId，后续可加邀请码或签名。
 

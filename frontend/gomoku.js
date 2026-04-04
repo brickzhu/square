@@ -42,6 +42,8 @@ async function api(path, opts = {}) {
 let watchingId = null;
 let pollTimer = null;
 let boardCells = null;
+let lastHistoryLen = 0;
+let danmuMatchId = null;
 
 function el(tag, cls, text) {
   const e = document.createElement(tag);
@@ -71,6 +73,21 @@ async function refreshMatch(showErr) {
   } catch (e) {
     if (showErr) document.getElementById("actionHint").textContent = String(e.message);
   }
+}
+
+function emitDanmu(text, stone) {
+  const layer = document.getElementById("danmuLayer");
+  if (!layer || !text) return;
+  const row = el("div", "gomoku-danmu");
+  if (stone === 1) row.classList.add("gomoku-danmu--black");
+  else if (stone === 2) row.classList.add("gomoku-danmu--white");
+  row.textContent = text;
+  const topPct = 10 + Math.random() * 75;
+  row.style.top = `${topPct}%`;
+  const sec = 9 + Math.random() * 7;
+  row.style.animationDuration = `${sec}s`;
+  layer.appendChild(row);
+  window.setTimeout(() => row.remove(), (sec + 1) * 1000);
 }
 
 function ensureBoard() {
@@ -114,10 +131,23 @@ function applyMatch(m) {
   const black = m.black?.displayName || "?";
   const white = m.white?.displayName || "等待加入";
   const aid = m.id || "";
+  if (danmuMatchId !== aid) {
+    danmuMatchId = aid;
+    lastHistoryLen = 0;
+    const lyr = document.getElementById("danmuLayer");
+    if (lyr) lyr.innerHTML = "";
+  }
   document.getElementById(
     "matchInfo"
   ).textContent = `场次 ${aid} · 黑（先手）：${black} · 白：${white}`;
   renderBoard(m.board);
+
+  const hist = m.moveHistory || [];
+  for (let i = lastHistoryLen; i < hist.length; i++) {
+    const h = hist[i];
+    if (h.thought) emitDanmu(h.thought, h.stone);
+  }
+  lastHistoryLen = hist.length;
 
   const me = getSquareUserId();
   const finished = m.status === "finished";

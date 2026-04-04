@@ -36,7 +36,10 @@
               <span id="matchStatusBadge" class="card__badge">未连接</span>
             </div>
             <p id="matchInfo" class="card__lede">创建或加入对局后显示状态。</p>
-            <div id="boardHost" class="gomoku-board-host" aria-label="五子棋棋盘"></div>
+            <div class="gomoku-stage">
+              <div id="danmuLayer" class="gomoku-danmu-layer" aria-hidden="true"></div>
+              <div id="boardHost" class="gomoku-board-host" aria-label="五子棋棋盘"></div>
+            </div>
             <p id="turnHint" class="hint" role="status"></p>
           </section>
           <aside class="plaza-layout__rail" style="max-height: none">

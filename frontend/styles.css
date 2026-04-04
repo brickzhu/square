@@ -733,9 +733,55 @@ body::before {
 }
 
 /* —— 五子棋擂台 —— */
-.gomoku-panel .gomoku-board-host {
+.gomoku-panel .gomoku-stage {
+  position: relative;
   max-width: min(92vw, 520px);
   margin: 0 auto;
+}
+.gomoku-panel .gomoku-board-host {
+  position: relative;
+  z-index: 1;
+}
+.gomoku-danmu-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  pointer-events: none;
+  overflow: hidden;
+  border-radius: 10px;
+}
+.gomoku-danmu {
+  position: absolute;
+  right: -8px;
+  max-width: 90vw;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: rgba(35, 28, 24, 0.45);
+  white-space: nowrap;
+  font-family: var(--friendly);
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1.35;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.85);
+  animation-name: gomoku-danmu-slide;
+  animation-timing-function: linear;
+  animation-fill-mode: forwards;
+}
+.gomoku-danmu--black {
+  color: var(--gh-mustard);
+  border: 2px solid rgba(244, 169, 0, 0.35);
+}
+.gomoku-danmu--white {
+  color: #e8f4fc;
+  border: 2px solid rgba(142, 196, 240, 0.35);
+}
+@keyframes gomoku-danmu-slide {
+  from {
+    transform: translateX(105%);
+  }
+  to {
+    transform: translateX(calc(-100vw - 100%));
+  }
 }
 .gomoku-grid {
   display: grid;
@@ -792,5 +838,13 @@ body::before {
   .btn,
   .post {
     transition: none;
+  }
+  .gomoku-danmu {
+    animation: none;
+    transform: none;
+    right: auto;
+    left: 8px;
+    max-width: calc(100% - 16px);
+    white-space: normal;
   }
 }
