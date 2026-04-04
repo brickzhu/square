@@ -12,7 +12,7 @@ function getSquareUserId() {
     }
     return id;
   } catch {
-    return "local-fallback";
+    return `u_${Date.now()}`;
   }
 }
 
@@ -44,6 +44,32 @@ let pollTimer = null;
 let boardCells = null;
 let lastHistoryLen = 0;
 let danmuMatchId = null;
+let currentMatchSnapshot = null;
+
+function isParticipantInMatch(m) {
+  const me = getSquareUserId();
+  return !!(m && (m.black?.userId === me || m.white?.userId === me));
+}
+
+function canClickBoardToMove(m) {
+  return (
+    m?.status === "running" &&
+    isParticipantInMatch(m) &&
+    m.nextPlayerUserId === getSquareUserId()
+  );
+}
+
+function updateInteractiveCells(m) {
+  if (!boardCells) return;
+  const playable = canClickBoardToMove(m);
+  for (let y = 0; y < 15; y++) {
+    for (let x = 0; x < 15; x++) {
+      const cell = boardCells[y][x];
+      cell.disabled = !playable;
+      cell.classList.toggle("gomoku-cell--no-play", !playable);
+    }
+  }
+}
 
 function el(tag, cls, text) {
   const e = document.createElement(tag);
@@ -70,8 +96,9 @@ async function refreshMatch(showErr) {
   try {
     const data = await api(`/api/v1/matches/${watchingId}`);
     applyMatch(data.item);
+    if (showErr) document.getElementById("actionHint").textContent = "";
   } catch (e) {
-    if (showErr) document.getElementById("actionHint").textContent = String(e.message);
+    if (showErr) document.getElementById("actionHint").textContent = String(e.message || e);
   }
 }
 
@@ -127,6 +154,7 @@ function renderBoard(board) {
 }
 
 function applyMatch(m) {
+  currentMatchSnapshot = m;
   document.getElementById("matchStatusBadge").textContent = m.status;
   const black = m.black?.displayName || "?";
   const white = m.white?.displayName || "等待加入";
@@ -147,8 +175,9 @@ function applyMatch(m) {
     const h = hist[i];
     const label = h.stone === 1 ? "黑" : h.stone === 2 ? "白" : "?";
     const n = typeof h.index === "number" ? h.index + 1 : i + 1;
-    const fallback = `第${n}手 · ${label} (${h.x},${h.y})`;
-    emitDanmu(h.thought && String(h.thought).trim() ? h.thought : fallback, h.stone);
+    const line = `第${n}手 · ${label} (${h.x},${h.y})`;
+    const extra = h.thought && String(h.thought).trim();
+    emitDanmu(extra || line, h.stone);
   }
   lastHistoryLen = hist.length;
 
@@ -158,19 +187,36 @@ function applyMatch(m) {
     if (m.winReason === "draw") document.getElementById("turnHint").textContent = "和棋";
     else if (m.winnerUserId === me) document.getElementById("turnHint").textContent = "你赢了";
     else document.getElementById("turnHint").textContent = m.winnerUserId ? "对手胜" : "终局";
+    updateInteractiveCells(m);
     stopPoll();
     return;
   }
   if (m.status === "running") {
-    if (m.nextPlayerUserId === me) document.getElementById("turnHint").textContent = "轮到你下（点击棋盘）";
-    else document.getElementById("turnHint").textContent = "等待对手…";
+    if (!isParticipantInMatch(m)) {
+      document.getElementById("turnHint").textContent = "观战中（仅观看）";
+    } else if (m.nextPlayerUserId === me) {
+      document.getElementById("turnHint").textContent = "轮到你下（点击棋盘）";
+    } else {
+      document.getElementById("turnHint").textContent = "等待对手…";
+    }
   } else {
     document.getElementById("turnHint").textContent = "等待对手加入本场";
   }
+  updateInteractiveCells(m);
 }
 
 async function onCellClick(x, y) {
-  if (!watchingId) return;
+  if (!watchingId || !currentMatchSnapshot) return;
+  if (!canClickBoardToMove(currentMatchSnapshot)) {
+    const hint = document.getElementById("actionHint");
+    if (!isParticipantInMatch(currentMatchSnapshot)) {
+      hint.textContent = "你不是本局棋手，无法在此落子。";
+    } else {
+      hint.textContent = "当前还未轮到你行棋。";
+    }
+    return;
+  }
+  document.getElementById("actionHint").textContent = "";
   try {
     const data = await api(`/api/v1/matches/${watchingId}/moves`, {
       method: "POST",
@@ -178,7 +224,7 @@ async function onCellClick(x, y) {
     });
     applyMatch(data.item);
   } catch (e) {
-    document.getElementById("actionHint").textContent = String(e.message);
+    document.getElementById("actionHint").textContent = String(e.message || e);
   }
 }
 
@@ -205,7 +251,7 @@ async function loadOpenMatches() {
       box.appendChild(row);
     }
   } catch (e) {
-    box.appendChild(el("div", "hint", `加载失败：${e.message}`));
+    box.appendChild(el("div", "hint", `加载失败：${e.message || e}`));
   }
 }
 
@@ -226,7 +272,7 @@ async function doCreate() {
     hint.textContent = "已创建，把你的场次 ID 给对手加入";
     await loadOpenMatches();
   } catch (e) {
-    hint.textContent = String(e.message);
+    hint.textContent = String(e.message || e);
   }
 }
 
@@ -251,7 +297,7 @@ async function doJoin() {
     hint.textContent = "已加入，黑棋先手";
     await loadOpenMatches();
   } catch (e) {
-    hint.textContent = String(e.message);
+    hint.textContent = String(e.message || e);
   }
 }
 

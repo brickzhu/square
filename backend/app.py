@@ -3,16 +3,11 @@ from __future__ import annotations
 
 import base64
 import json
-import logging
 import os
 import re
 import secrets
-import threading
 import time
-import urllib.error
-import urllib.request
 from dataclasses import dataclass
-from urllib.parse import urlparse
 from pathlib import Path
 from typing import Any
 
@@ -32,18 +27,6 @@ MAX_INLINE_IMAGE_BYTES = 2 * 1024 * 1024
 _UPLOAD_NAME_RE = re.compile(r"^img_[0-9a-f]{16}\.(png|jpg|jpeg|gif|webp)$", re.IGNORECASE)
 
 GOMOKU_SIZE = 15
-
-_gomoku_webhook_log = logging.getLogger("square.gomoku.webhook")
-
-
-def _webhook_url_for_log(url: str) -> str:
-    try:
-        p = urlparse(url)
-        if p.netloc:
-            return f"{p.scheme}://{p.netloc}{p.path}"
-    except ValueError:
-        pass
-    return (url or "")[:96]
 
 
 def now_ms() -> int:
@@ -145,91 +128,11 @@ def _format_move_danmu_from_body(body: dict[str, Any]) -> str:
     return merged
 
 
-def _sanitize_webhook_url(url: str) -> str:
-    u = (url or "").strip()
-    if not u or len(u) > 512:
-        return ""
-    if not (u.startswith("http://") or u.startswith("https://")):
-        return ""
-    return u
-
-
 def _public_player(side: dict[str, Any] | None) -> dict[str, Any] | None:
     if not side:
         return side
+    # 历史数据或旧字段中可能含 webhookUrl，对外永不返回
     return {k: v for k, v in side.items() if k != "webhookUrl"}
-
-
-def _notify_turn_webhook(match: dict[str, Any]) -> None:
-    """主动通知「下一手行棋方」：由其在自有运行时里拉 forAgent 并下子。失败写入日志（供排查）。"""
-    if match.get("status") != "running":
-        return
-    uid = match.get("nextPlayerUserId")
-    if not uid:
-        return
-    b, w = match.get("black") or {}, match.get("white") or {}
-    url = ""
-    if b.get("userId") == uid:
-        url = str(b.get("webhookUrl") or "").strip()
-    elif isinstance(w, dict) and w.get("userId") == uid:
-        url = str(w.get("webhookUrl") or "").strip()
-    url = _sanitize_webhook_url(url)
-    if not url:
-        if os.environ.get("SQUARE_WEBHOOK_DEBUG", "").lower() in ("1", "true", "yes"):
-            _gomoku_webhook_log.info(
-                "gomoku webhook skipped (no webhookUrl) match=%s nextPlayer=%s",
-                match.get("id"),
-                uid,
-            )
-        return
-    payload = {
-        "event": "gomoku.your_turn",
-        "matchId": match["id"],
-        "nextPlayerUserId": uid,
-        "agentStatePath": f"/api/v1/matches/{match['id']}?forAgent=1",
-        "match": _match_to_public(match),
-    }
-    headers = {"Content-Type": "application/json; charset=utf-8"}
-    sec = os.environ.get("SQUARE_WEBHOOK_SECRET", "").strip()
-    if sec:
-        headers["X-Square-Webhook-Secret"] = sec
-    safe_url = _webhook_url_for_log(url)
-    try:
-        data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-        req = urllib.request.Request(url, data=data, headers=headers, method="POST")
-        with urllib.request.urlopen(req, timeout=12) as resp:
-            code = getattr(resp, "status", None) or resp.getcode()
-        _gomoku_webhook_log.info("gomoku webhook ok match=%s url=%s http=%s", match["id"], safe_url, code)
-    except urllib.error.HTTPError as e:
-        body = ""
-        try:
-            body = e.read().decode("utf-8", errors="replace")[:200]
-        except OSError:
-            pass
-        _gomoku_webhook_log.warning(
-            "gomoku webhook http error match=%s url=%s code=%s body=%r",
-            match["id"],
-            safe_url,
-            e.code,
-            body,
-        )
-    except (urllib.error.URLError, OSError, ValueError) as e:
-        _gomoku_webhook_log.warning(
-            "gomoku webhook failed match=%s url=%s: %s",
-            match["id"],
-            safe_url,
-            e,
-        )
-
-
-def _notify_turn_async(match_id: str) -> None:
-    def run() -> None:
-        db = load_db()
-        m = _find_match(db, match_id)
-        if m:
-            _notify_turn_webhook(m)
-
-    threading.Thread(target=run, daemon=True).start()
 
 
 def _empty_gomoku_board() -> list[list[int]]:
@@ -345,9 +248,9 @@ def _agent_input_bundle(match: dict[str, Any], viewer_uid: str) -> dict[str, Any
     history_text = "\n".join(hist_lines) if hist_lines else "(no moves yet)"
 
     output_contract_zh = (
-        "若「是否轮到你」为 true：由你的运行时代码向广场发 POST /moves，body 为 JSON，必须含 x、y；"
-        "可将解说、推理或其它说明放在 **thought**（或 caption / danmu / comment / voice / narration / say），"
-        "也可在 body 中使用其它自定义键；除 x、y 外的字段会合并展示在观战页弹幕（过长时服务端按上限截取）。"
+        "全自动对弈：请周期性 GET 本局 `GET /api/v1/matches/<id>?forAgent=1`（带己方 X-User-Id），直至 `status` 为 finished；"
+        "当 `isYourTurn` 为 true 时向广场 POST /moves，body 为 JSON，须含 x、y。"
+        "可将解说放在 **thought**（或 caption / danmu / comment / voice / narration / say）等键。"
         "若轮不到你：不要 POST 落子。"
     )
     output_contract_en = (
@@ -673,7 +576,6 @@ def create_match():
     now = now_ms()
     disp = sanitize_text(body.get("displayName", "匿名棋士"), max_len=16)
     agent_label = sanitize_text(body.get("agentLabel", ""), max_len=32)
-    b_wh_raw = _sanitize_webhook_url(str(body.get("webhookUrl", "") or ""))
 
     match = {
         "id": new_id("match"),
@@ -685,7 +587,6 @@ def create_match():
             "userId": uid,
             "displayName": disp,
             "agentLabel": agent_label or None,
-            "webhookUrl": b_wh_raw or None,
         },
         "white": None,
         "nextPlayerUserId": None,
@@ -747,19 +648,16 @@ def join_match(match_id: str):
     body = request.get_json(force=True, silent=False) or {}
     disp = sanitize_text(body.get("displayName", "匿名棋士"), max_len=16)
     agent_label = sanitize_text(body.get("agentLabel", ""), max_len=32)
-    w_wh_raw = _sanitize_webhook_url(str(body.get("webhookUrl", "") or ""))
 
     m["white"] = {
         "userId": uid,
         "displayName": disp,
         "agentLabel": agent_label or None,
-        "webhookUrl": w_wh_raw or None,
     }
     m["status"] = "running"
     m["nextPlayerUserId"] = black_uid
     m["updatedAtMs"] = now_ms()
     save_db(db)
-    _notify_turn_async(m["id"])
     return jsonify({"ok": True, "item": _match_to_public(m)})
 
 
@@ -774,6 +672,11 @@ def play_move(match_id: str):
         return jsonify({"ok": False, "error": {"message": "match not running"}}), 400
 
     uid = get_client_user_id()
+    # 先校验是否本局棋手，避免观战者只收到「not your turn」而不知道身份未绑定
+    stone = _stone_for_user(m, uid)
+    if not stone:
+        current_app.logger.warning("gomoku move rejected: not a player match=%s uid=%s", match_id, uid)
+        return jsonify({"ok": False, "error": {"message": "not a player"}}), 403
     if m.get("nextPlayerUserId") != uid:
         current_app.logger.warning(
             "gomoku move rejected: not your turn match=%s expect=%s got=%s",
@@ -794,11 +697,6 @@ def play_move(match_id: str):
     if not (0 <= x < GOMOKU_SIZE and 0 <= y < GOMOKU_SIZE):
         current_app.logger.warning("gomoku move rejected: out of board match=%s x=%s y=%s", match_id, x, y)
         return jsonify({"ok": False, "error": {"message": "out of board"}}), 400
-
-    stone = _stone_for_user(m, uid)
-    if not stone:
-        current_app.logger.warning("gomoku move rejected: not a player match=%s uid=%s", match_id, uid)
-        return jsonify({"ok": False, "error": {"message": "not a player"}}), 403
 
     board = m.get("board") or _empty_gomoku_board()
     if board[y][x] != 0:
@@ -847,8 +745,6 @@ def play_move(match_id: str):
 
     m["updatedAtMs"] = now_ms()
     save_db(db)
-    if m.get("status") == "running":
-        _notify_turn_async(m["id"])
     pub = _match_to_public(m)
     if _truthy_query("forAgent"):
         pub["agentInput"] = _agent_input_bundle(m, get_client_user_id())
