@@ -6,7 +6,10 @@ import json
 import os
 import re
 import secrets
+import threading
 import time
+import urllib.error
+import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -72,6 +75,66 @@ def sanitize_text(s: str, *, max_len: int = 200) -> str:
     return s
 
 
+def _sanitize_webhook_url(url: str) -> str:
+    u = (url or "").strip()
+    if not u or len(u) > 512:
+        return ""
+    if not (u.startswith("http://") or u.startswith("https://")):
+        return ""
+    return u
+
+
+def _public_player(side: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not side:
+        return side
+    return {k: v for k, v in side.items() if k != "webhookUrl"}
+
+
+def _notify_turn_webhook(match: dict[str, Any]) -> None:
+    """主动通知「下一手行棋方」：由其在自有运行时里拉 forAgent 并下子。失败静默。"""
+    if match.get("status") != "running":
+        return
+    uid = match.get("nextPlayerUserId")
+    if not uid:
+        return
+    b, w = match.get("black") or {}, match.get("white") or {}
+    url = ""
+    if b.get("userId") == uid:
+        url = str(b.get("webhookUrl") or "").strip()
+    elif isinstance(w, dict) and w.get("userId") == uid:
+        url = str(w.get("webhookUrl") or "").strip()
+    url = _sanitize_webhook_url(url)
+    if not url:
+        return
+    payload = {
+        "event": "gomoku.your_turn",
+        "matchId": match["id"],
+        "nextPlayerUserId": uid,
+        "agentStatePath": f"/api/v1/matches/{match['id']}?forAgent=1",
+        "match": _match_to_public(match),
+    }
+    headers = {"Content-Type": "application/json; charset=utf-8"}
+    sec = os.environ.get("SQUARE_WEBHOOK_SECRET", "").strip()
+    if sec:
+        headers["X-Square-Webhook-Secret"] = sec
+    try:
+        data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+        urllib.request.urlopen(req, timeout=12)
+    except (urllib.error.URLError, urllib.error.HTTPError, OSError, ValueError):
+        pass
+
+
+def _notify_turn_async(match_id: str) -> None:
+    def run() -> None:
+        db = load_db()
+        m = _find_match(db, match_id)
+        if m:
+            _notify_turn_webhook(m)
+
+    threading.Thread(target=run, daemon=True).start()
+
+
 def _empty_gomoku_board() -> list[list[int]]:
     return [[0 for _ in range(GOMOKU_SIZE)] for _ in range(GOMOKU_SIZE)]
 
@@ -125,8 +188,8 @@ def _match_to_public(match: dict[str, Any]) -> dict[str, Any]:
         "boardSize": match.get("boardSize", GOMOKU_SIZE),
         "board": match.get("board"),
         "status": match.get("status"),
-        "black": match.get("black"),
-        "white": match.get("white"),
+        "black": _public_player(match.get("black")),
+        "white": _public_player(match.get("white")),
         "nextPlayerUserId": match.get("nextPlayerUserId"),
         "winnerUserId": match.get("winnerUserId"),
         "winnerStone": match.get("winnerStone"),
@@ -216,8 +279,8 @@ def _agent_input_bundle(match: dict[str, Any], viewer_uid: str) -> dict[str, Any
         "role": role,
         "isYourTurn": is_your_turn,
         "status": match.get("status"),
-        "black": match.get("black"),
-        "white": match.get("white"),
+        "black": _public_player(match.get("black")),
+        "white": _public_player(match.get("white")),
         "nextPlayerUserId": match.get("nextPlayerUserId"),
         "board": board,
         "boardAscii": board_ascii,
@@ -512,6 +575,7 @@ def create_match():
     now = now_ms()
     disp = sanitize_text(body.get("displayName", "匿名棋士"), max_len=16)
     agent_label = sanitize_text(body.get("agentLabel", ""), max_len=32)
+    b_wh_raw = _sanitize_webhook_url(str(body.get("webhookUrl", "") or ""))
 
     match = {
         "id": new_id("match"),
@@ -519,7 +583,12 @@ def create_match():
         "boardSize": GOMOKU_SIZE,
         "board": _empty_gomoku_board(),
         "status": "open",
-        "black": {"userId": uid, "displayName": disp, "agentLabel": agent_label or None},
+        "black": {
+            "userId": uid,
+            "displayName": disp,
+            "agentLabel": agent_label or None,
+            "webhookUrl": b_wh_raw or None,
+        },
         "white": None,
         "nextPlayerUserId": None,
         "winnerUserId": None,
@@ -580,12 +649,19 @@ def join_match(match_id: str):
     body = request.get_json(force=True, silent=False) or {}
     disp = sanitize_text(body.get("displayName", "匿名棋士"), max_len=16)
     agent_label = sanitize_text(body.get("agentLabel", ""), max_len=32)
+    w_wh_raw = _sanitize_webhook_url(str(body.get("webhookUrl", "") or ""))
 
-    m["white"] = {"userId": uid, "displayName": disp, "agentLabel": agent_label or None}
+    m["white"] = {
+        "userId": uid,
+        "displayName": disp,
+        "agentLabel": agent_label or None,
+        "webhookUrl": w_wh_raw or None,
+    }
     m["status"] = "running"
     m["nextPlayerUserId"] = black_uid
     m["updatedAtMs"] = now_ms()
     save_db(db)
+    _notify_turn_async(m["id"])
     return jsonify({"ok": True, "item": _match_to_public(m)})
 
 
@@ -643,6 +719,8 @@ def play_move(match_id: str):
 
     m["updatedAtMs"] = now_ms()
     save_db(db)
+    if m.get("status") == "running":
+        _notify_turn_async(m["id"])
     pub = _match_to_public(m)
     if _truthy_query("forAgent"):
         pub["agentInput"] = _agent_input_bundle(m, get_client_user_id())
