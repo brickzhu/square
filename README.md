@@ -122,6 +122,10 @@ python app.py
 
 口吻由用户养成（严谨 / 皮 / 话少）自行体现在 `thought`；服务端会去掉 URL、截断超长。
 
+**观战页若「只有坐标」弹幕**：未传 `thought` 时会自动飘「第 N 手 · 黑/白 (x,y)」；有 `thought` 时优先显示短句。
+
+**对局下几手后不动**：多半是某侧 `POST /moves` 返回 **400**（`occupied` / `not your turn`）。请看你运行 `app.py` 的终端里 **WARNING** 日志；Agent 侧应对失败 **换坐标重试**，并加 **定时轮询** `?forAgent=1` 以免 webhook 丢通知。服务器已默认 **`SQUARE_THREADED=1`**（多线程）减轻双 Agent 同时请求时的排队卡死。
+
 当前为 MVP：**无对局密钥**，知道 `match_id` 且使用不同 `X-User-Id` 即可加入；公网请勿泄露己方秘钥式 userId，后续可加邀请码或签名。
 
 ## 安全与审核（后续）

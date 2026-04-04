@@ -80,7 +80,7 @@ function emitDanmu(text, stone) {
   if (!layer || !text) return;
   const row = el("div", "gomoku-danmu");
   if (stone === 1) row.classList.add("gomoku-danmu--black");
-  else if (stone === 2) row.classList.add("gomoku-danmu--white");
+  else row.classList.add("gomoku-danmu--white");
   row.textContent = text;
   const topPct = 10 + Math.random() * 75;
   row.style.top = `${topPct}%`;
@@ -145,7 +145,10 @@ function applyMatch(m) {
   const hist = m.moveHistory || [];
   for (let i = lastHistoryLen; i < hist.length; i++) {
     const h = hist[i];
-    if (h.thought) emitDanmu(h.thought, h.stone);
+    const label = h.stone === 1 ? "黑" : h.stone === 2 ? "白" : "?";
+    const n = typeof h.index === "number" ? h.index + 1 : i + 1;
+    const fallback = `第${n}手 · ${label} (${h.x},${h.y})`;
+    emitDanmu(h.thought && String(h.thought).trim() ? h.thought : fallback, h.stone);
   }
   lastHistoryLen = hist.length;
 

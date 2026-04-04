@@ -745,7 +745,7 @@ body::before {
 .gomoku-danmu-layer {
   position: absolute;
   inset: 0;
-  z-index: 4;
+  z-index: 20;
   pointer-events: none;
   overflow: hidden;
   border-radius: 10px;
@@ -754,9 +754,10 @@ body::before {
   position: absolute;
   right: -8px;
   max-width: 90vw;
-  padding: 4px 10px;
+  padding: 6px 12px;
   border-radius: 999px;
-  background: rgba(35, 28, 24, 0.45);
+  background: rgba(35, 28, 24, 0.72);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
   white-space: nowrap;
   font-family: var(--friendly);
   font-size: 14px;

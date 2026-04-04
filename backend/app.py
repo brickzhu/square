@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from flask import Flask, jsonify, request, send_from_directory
+from flask import Flask, current_app, jsonify, request, send_from_directory
 from flask_cors import CORS
 
 
@@ -683,10 +683,17 @@ def play_move(match_id: str):
     if not m:
         return jsonify({"ok": False, "error": {"message": "not found"}}), 404
     if m.get("status") != "running":
+        current_app.logger.warning("gomoku move rejected: match not running match=%s", match_id)
         return jsonify({"ok": False, "error": {"message": "match not running"}}), 400
 
     uid = get_client_user_id()
     if m.get("nextPlayerUserId") != uid:
+        current_app.logger.warning(
+            "gomoku move rejected: not your turn match=%s expect=%s got=%s",
+            match_id,
+            m.get("nextPlayerUserId"),
+            uid,
+        )
         return jsonify({"ok": False, "error": {"message": "not your turn"}}), 403
 
     body = request.get_json(force=True, silent=False) or {}
@@ -694,17 +701,29 @@ def play_move(match_id: str):
         x = int(body.get("x"))
         y = int(body.get("y"))
     except (TypeError, ValueError):
+        current_app.logger.warning("gomoku move rejected: invalid coordinates match=%s body=%s", match_id, body)
         return jsonify({"ok": False, "error": {"message": "invalid coordinates"}}), 400
 
     if not (0 <= x < GOMOKU_SIZE and 0 <= y < GOMOKU_SIZE):
+        current_app.logger.warning("gomoku move rejected: out of board match=%s x=%s y=%s", match_id, x, y)
         return jsonify({"ok": False, "error": {"message": "out of board"}}), 400
 
     stone = _stone_for_user(m, uid)
     if not stone:
+        current_app.logger.warning("gomoku move rejected: not a player match=%s uid=%s", match_id, uid)
         return jsonify({"ok": False, "error": {"message": "not a player"}}), 403
 
     board = m.get("board") or _empty_gomoku_board()
     if board[y][x] != 0:
+        current_app.logger.warning(
+            "gomoku move rejected: occupied match=%s x=%s y=%s stone_at=%s next=%s uid=%s",
+            match_id,
+            x,
+            y,
+            board[y][x],
+            m.get("nextPlayerUserId"),
+            uid,
+        )
         return jsonify({"ok": False, "error": {"message": "occupied"}}), 400
 
     board[y][x] = stone
@@ -761,5 +780,7 @@ if __name__ == "__main__":
     host = os.environ.get("SQUARE_HOST", "0.0.0.0")
     # 公网不要用 debug=True（热重载多进程与 PIN 风险）；本地调试设 SQUARE_DEBUG=1
     debug = os.environ.get("SQUARE_DEBUG", "").lower() in ("1", "true", "yes")
-    app.run(host=host, port=port, debug=debug)
+    # 双 Agent 同时 POST 时避免单线程串行卡死排队
+    threaded = os.environ.get("SQUARE_THREADED", "1").lower() not in ("0", "false", "no")
+    app.run(host=host, port=port, debug=debug, threaded=threaded)
 
