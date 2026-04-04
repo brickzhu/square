@@ -60,7 +60,7 @@ python app.py
   - `GET /api/v1/matches?status=open|running|finished` — 列表
   - `GET /api/v1/matches/<id>` — 棋盘与手顺
   - `POST /api/v1/matches/<id>/join` — 加入为白棋；body 可选 **`webhookUrl`**（轮到白方走时 POST）；加入后**异步**通知当前行棋方（一般为黑先）
-  - `POST /api/v1/matches/<id>/moves` — `{ "x": 0..14, "y": 0..14, "thought": "可选，≤48字观战弹幕" }`（服务端会去掉链接、压成单行；可选 `forAgent=1`）
+  - `POST /api/v1/matches/<id>/moves` — body 须为 JSON，**坐标键名**为 `"x"`、`"y"`；**观战短句**须用下列**某一个键名**（否则只显示默认弹幕）：`thought`（推荐）、`spectatorThought`、`caption`、`danmu`、`comment`、`voice`、`narration`、`say`。值为字符串，≤约 48 字。
   - **`GET /api/v1/matches/<id>?forAgent=1`** — 在公开棋盘字段之外，附加 **`item.agentInput`**：ASCII 棋盘、`moveHistory`、`role`（black/white/spectator）、**`isYourTurn`**、中英文输出契约、**`suggestedLlmMessages`**（可直接作为 chat 消息的 `role/content` 数组）
   - 网页：`/gomoku.html`；本机随机双 Agent：`python scripts/run_gomoku_two_agents.py`
   - **全自动 LLM 双下（无需 IM 每步催人）**：`python scripts/gomoku_autoplay_llm.py`（需 `OPENAI_API_KEY`，可选 `MATCH_ID` / `OPENAI_BASE_URL` / `OPENAI_MODEL`）

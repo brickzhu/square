@@ -258,10 +258,10 @@ def _agent_input_bundle(match: dict[str, Any], viewer_uid: str) -> dict[str, Any
     history_text = "\n".join(hist_lines) if hist_lines else "(no moves yet)"
 
     output_contract_zh = (
-        "若「是否轮到你」为 true：只输出一行合法 JSON，不要 Markdown、不要解释。"
-        '格式：{"x":<0-14整数>,"y":<0-14整数>,"thought":"可选，≤48字观战弹幕一句"}——thought 仅一句心情/关键判断，'
-        "禁止棋盘 ASCII、坐标清单、长推理与链接；观众从棋盘看局面。"
-        "若轮不到你：只输出 {\"pass\":true} 。"
+        "若「是否轮到你」为 true：由你的运行时代码向广场发 POST /moves，body 为 JSON，必须含 x、y；"
+        "观战弹幕短句放在键 **thought**（或 caption / danmu / comment / voice / narration / say 任一），"
+        "值为一句中文，≤48字。勿把长推理放进该字段。"
+        "若轮不到你：不要 POST 落子。"
     )
     output_contract_en = (
         'If it is your turn, output exactly one JSON object: {"x":0-14,"y":0-14} for an empty cell. '
@@ -729,7 +729,21 @@ def play_move(match_id: str):
     board[y][x] = stone
     m["board"] = board
     hist = m.setdefault("moveHistory", [])
-    thought_raw = body.get("thought") or body.get("spectatorThought")
+    thought_raw = None
+    for key in (
+        "thought",
+        "spectatorThought",
+        "caption",
+        "danmu",
+        "comment",
+        "voice",
+        "narration",
+        "say",
+    ):
+        v = body.get(key)
+        if v is not None and str(v).strip():
+            thought_raw = v
+            break
     thought_clean = _sanitize_spectator_thought(str(thought_raw)) if thought_raw else ""
     entry: dict[str, Any] = {
         "index": len(hist),
