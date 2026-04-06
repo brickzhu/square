@@ -238,7 +238,7 @@ function ensureBoard(m) {
 
   const host = document.getElementById("boardHost");
   host.innerHTML = "";
-  const stage = el("div", "checkers-stage-inner");
+  const boardInner = el("div", "checkers-board-inner");
   const pts = ALL_CELLS.map(([q, r]) => {
     const [x, y] = cellPx(q, r, HOLE_SIZE);
     return { q, r, x, y };
@@ -258,9 +258,9 @@ function ensureBoard(m) {
   const h = maxY - minY + pad * 2;
   const ox = -minX + pad;
   const oy = -minY + pad;
-  stage.style.width = `${w}px`;
-  stage.style.height = `${h}px`;
-  host.appendChild(stage);
+  boardInner.style.width = `${w}px`;
+  boardInner.style.height = `${h}px`;
+  host.appendChild(boardInner);
   holeBtns = {};
 
   const snap = m || currentMatchSnapshot;
@@ -283,7 +283,7 @@ function ensureBoard(m) {
     for (const s of Object.keys(campSets)) {
       if (campSets[s].has(k)) btn.classList.add(`checkers-hole--camp-${s}`);
     }
-    stage.appendChild(btn);
+    boardInner.appendChild(btn);
     holeBtns[k] = btn;
   }
 }

@@ -320,6 +320,20 @@ body::before {
 .drawer.hidden {
   display: none;
 }
+
+/* 详情在侧栏展示，不占地图画布区域，避免地图框被内容撑变形 */
+.drawer--rail {
+  position: relative;
+  top: auto;
+  right: auto;
+  width: 100%;
+  max-height: min(58dvh, 560px);
+  overflow-x: hidden;
+  overflow-y: auto;
+  flex-shrink: 0;
+  -webkit-overflow-scrolling: touch;
+}
+
 .drawer__top {
   display: flex;
   align-items: center;
@@ -363,6 +377,25 @@ body::before {
   line-height: 1.5;
   white-space: pre-wrap;
 }
+.drawer__matchPanel {
+  margin-top: 0.6rem;
+}
+
+.drawer__matchHint {
+  margin-top: 0.65rem;
+  font-size: 0.82rem;
+  line-height: 1.45;
+}
+
+.drawer__matchHint code {
+  font-size: 0.78em;
+}
+
+.drawer__actions--match {
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
 .drawer__actions {
   margin-top: 12px;
   display: flex;
@@ -631,6 +664,8 @@ body::before {
 }
 .feed.card {
   padding-bottom: 16px;
+  min-width: 0;
+  overflow-x: clip;
 }
 .feed__head {
   display: flex;
@@ -651,10 +686,63 @@ body::before {
   font-size: 14px;
   color: rgba(255, 248, 240, 0.72);
 }
+
+.feed__zoneBar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 10px;
+  margin-top: 8px;
+  padding: 10px 10px 12px;
+  border: 3px dashed rgba(212, 184, 150, 0.35);
+  border-radius: 12px;
+  background: rgba(0, 0, 0, 0.14);
+}
+.feed__zoneLabel {
+  font-family: var(--pixel);
+  font-size: 8px;
+  letter-spacing: 0.06em;
+  color: var(--gh-mustard);
+  flex-shrink: 0;
+}
+.feed__zoneBtns {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+}
+.feed__zoneBtn {
+  font-family: var(--friendly);
+  font-size: 13px;
+  padding: 6px 10px;
+  border-radius: 999px;
+  border: 3px solid var(--line);
+  background: rgba(92, 82, 73, 0.6);
+  color: var(--text);
+  cursor: pointer;
+  line-height: 1.2;
+  transition:
+    background 0.12s ease,
+    border-color 0.12s ease,
+    color 0.12s ease;
+}
+.feed__zoneBtn:hover {
+  border-color: var(--gh-beige);
+  background: rgba(92, 82, 73, 0.85);
+}
+.feed__zoneBtn--active {
+  border-color: var(--gh-mustard);
+  background: linear-gradient(145deg, rgba(244, 169, 0, 0.35) 0%, rgba(92, 82, 73, 0.9) 100%);
+  color: var(--text);
+  box-shadow: var(--pixel-shadow-sm);
+}
+
 .feed__list {
   display: grid;
   gap: 14px;
   margin-top: 10px;
+  min-width: 0;
 }
 .feed__more {
   margin-top: 8px;
@@ -662,15 +750,32 @@ body::before {
 
 .post {
   display: grid;
-  grid-template-columns: 140px 1fr;
+  grid-template-columns: 140px minmax(0, 1fr);
   gap: 14px;
   padding: 14px;
+  min-width: 0;
+  max-width: 100%;
   border: 3px solid var(--line);
   border-radius: 14px;
   background: linear-gradient(145deg, rgba(92, 82, 73, 0.95) 0%, rgba(58, 50, 45, 0.96) 100%);
   box-shadow: var(--pixel-shadow-sm);
   transition: border-color 0.15s ease, transform 0.15s ease, box-shadow 0.15s ease;
 }
+.post--match {
+  grid-template-columns: 140px minmax(0, 1fr);
+}
+.post--match .thumb--match {
+  display: grid;
+  place-items: center;
+  font-family: var(--pixel);
+  font-size: 42px;
+  line-height: 1;
+  color: var(--gh-mustard);
+  text-shadow: var(--pixel-shadow-sm);
+  background: linear-gradient(160deg, rgba(74, 143, 92, 0.35) 0%, rgba(35, 28, 24, 0.5) 100%);
+  user-select: none;
+}
+
 .post:hover {
   border-color: var(--gh-mustard);
   transform: translate(-2px, -2px);
@@ -699,16 +804,26 @@ body::before {
 .meta {
   display: grid;
   gap: 8px;
+  min-width: 0;
 }
 .meta__title {
   font-weight: 700;
   font-size: 17px;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 .meta__text {
   color: var(--muted);
   font-size: 15px;
   line-height: 1.45;
   white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.meta__hint {
+  font-size: 13px;
+  color: rgba(201, 184, 164, 0.88);
+  line-height: 1.4;
 }
 .meta__row {
   display: flex;
@@ -717,6 +832,7 @@ body::before {
   color: var(--muted);
   font-size: 13px;
   flex-wrap: wrap;
+  min-width: 0;
 }
 .pill {
   padding: 4px 10px;
@@ -832,7 +948,8 @@ body.gomoku-page .plaza-layout.gomoku-layout {
   body.gomoku-page .gomoku-layout .row .btn {
     width: 100%;
   }
-  body.gomoku-page .gomoku-panel .gomoku-stage {
+  body.gomoku-page .gomoku-panel .gomoku-board-wrap,
+  body.gomoku-page .gomoku-panel .checkers-board-wrap {
     max-width: 100%;
   }
   body.gomoku-page .gomoku-grid {
@@ -844,7 +961,8 @@ body.gomoku-page .plaza-layout.gomoku-layout {
     align-items: stretch;
   }
 }
-.gomoku-panel .gomoku-stage {
+.gomoku-panel .gomoku-board-wrap,
+.gomoku-panel .checkers-board-wrap {
   position: relative;
   max-width: min(100%, 520px);
   margin: 0 auto;
@@ -1012,7 +1130,7 @@ body.gomoku-page .plaza-layout.gomoku-layout {
 }
 
 /* —— 跳棋（六角格） —— */
-.checkers-stage {
+.checkers-board-wrap {
   min-height: 260px;
 }
 .checkers-board-host {
@@ -1023,7 +1141,7 @@ body.gomoku-page .plaza-layout.gomoku-layout {
   justify-content: center;
   padding: 8px 0;
 }
-.checkers-stage-inner {
+.checkers-board-inner {
   position: relative;
   flex-shrink: 0;
 }
