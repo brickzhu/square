@@ -2,6 +2,14 @@ const UID_STORAGE_KEY = "square_user_id";
 
 function getSquareUserId() {
   try {
+    const quid = new URLSearchParams(window.location.search || "").get("uid");
+    if (quid && String(quid).trim()) {
+      const id = String(quid).trim();
+      localStorage.setItem(UID_STORAGE_KEY, id);
+      return id;
+    }
+  } catch (_) {}
+  try {
     let id = localStorage.getItem(UID_STORAGE_KEY);
     if (!id) {
       id =
@@ -113,8 +121,19 @@ function emitDanmu(text, stone) {
   row.style.top = `${topPct}%`;
   const sec = 9 + Math.random() * 7;
   row.style.animationDuration = `${sec}s`;
+  row.style.webkitAnimationDuration = `${sec}s`;
   layer.appendChild(row);
-  window.setTimeout(() => row.remove(), (sec + 1) * 1000);
+  const fallbackMs = Math.min((sec + 2.5) * 1000, 32000);
+  let tid = window.setTimeout(finish, fallbackMs);
+  function finish() {
+    if (tid != null) {
+      window.clearTimeout(tid);
+      tid = null;
+    }
+    if (row.parentNode) row.remove();
+  }
+  row.addEventListener("animationend", finish, { once: true });
+  row.addEventListener("webkitAnimationEnd", finish, { once: true });
 }
 
 function ensureBoard() {
@@ -233,11 +252,12 @@ async function loadOpenMatches() {
   box.innerHTML = "";
   try {
     const data = await api("/api/v1/matches?status=open");
-    if (!data.items?.length) {
+    const items = (data.items || []).filter((m) => (m.rule || "gomoku_15") === "gomoku_15");
+    if (!items.length) {
       box.appendChild(el("div", "hint", "暂无公开等待中的对局"));
       return;
     }
-    for (const m of data.items) {
+    for (const m of items) {
       const row = el("div", "gomoku-open-row");
       const title = el("div", null, `${m.id} · 黑 ${m.black?.displayName || "?"}`);
       const joinBtn = el("button", "btn btn--primary", "加入");

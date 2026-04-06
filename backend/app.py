@@ -14,6 +14,15 @@ from typing import Any
 from flask import Flask, current_app, jsonify, request, send_from_directory
 from flask_cors import CORS
 
+from checkers_star_geometry import (
+    CHECKERS_P1_GOAL,
+    CHECKERS_P1_START,
+    CHECKERS_P2_GOAL,
+    CHECKERS_P2_START,
+    CHECKERS_STAR_ALL,
+    checkers_six_goal_indices,
+    checkers_six_homes,
+)
 
 APP_ROOT = Path(__file__).resolve().parent
 SQUARE_ROOT = APP_ROOT.parent
@@ -27,6 +36,15 @@ MAX_INLINE_IMAGE_BYTES = 2 * 1024 * 1024
 _UPLOAD_NAME_RE = re.compile(r"^img_[0-9a-f]{16}\.(png|jpg|jpeg|gif|webp)$", re.IGNORECASE)
 
 GOMOKU_SIZE = 15
+CHECKERS_RULE = "checkers_chinese_star"
+_CHECKERS_HEX_DIRS: tuple[tuple[int, int], ...] = (
+    (1, 0),
+    (1, -1),
+    (0, -1),
+    (-1, 0),
+    (-1, 1),
+    (0, 1),
+)
 
 
 def now_ms() -> int:
@@ -160,7 +178,209 @@ def _board_is_full(board: list[list[int]]) -> bool:
     return all(board[r][c] != 0 for r in range(GOMOKU_SIZE) for c in range(GOMOKU_SIZE))
 
 
+def _checkers_hex_key(q: int, r: int) -> str:
+    return f"{q},{r}"
+
+
+_CHECKERS_VALID_KEYS: frozenset[str] = frozenset(
+    _checkers_hex_key(q, r) for q, r in CHECKERS_STAR_ALL
+)
+
+
+def _checkers_start_key_lists() -> tuple[list[str], list[str]]:
+    p1 = sorted(_checkers_hex_key(*c) for c in CHECKERS_P1_START)
+    p2 = sorted(_checkers_hex_key(*c) for c in CHECKERS_P2_START)
+    return p1, p2
+
+
+def _checkers_goal_key_lists() -> tuple[list[str], list[str]]:
+    g1 = sorted(_checkers_hex_key(*c) for c in CHECKERS_P1_GOAL)
+    g2 = sorted(_checkers_hex_key(*c) for c in CHECKERS_P2_GOAL)
+    return g1, g2
+
+
+def _checkers_player_count(match: dict[str, Any]) -> int:
+    raw = match.get("checkersPlayerCount")
+    if raw in (2, 6):
+        return int(raw)
+    if raw is not None:
+        try:
+            v = int(raw)
+            if v in (2, 6):
+                return v
+        except (TypeError, ValueError):
+            pass
+    return 2
+
+
+def _get_checkers_seats(match: dict[str, Any]) -> list[dict[str, Any]]:
+    raw = match.get("checkersSeats")
+    if isinstance(raw, list) and raw:
+        out: list[dict[str, Any]] = []
+        for s in raw:
+            if not isinstance(s, dict):
+                continue
+            seat = s.get("seat")
+            uid = s.get("userId")
+            if seat is None or not uid:
+                continue
+            out.append(
+                {
+                    "seat": int(seat),
+                    "userId": str(uid),
+                    "displayName": s.get("displayName"),
+                    "agentLabel": s.get("agentLabel"),
+                }
+            )
+        if out:
+            return sorted(out, key=lambda x: x["seat"])
+    b = match.get("black") or {}
+    w = match.get("white") or {}
+    legacy: list[dict[str, Any]] = []
+    if b.get("userId"):
+        legacy.append(
+            {
+                "seat": 1,
+                "userId": str(b["userId"]),
+                "displayName": b.get("displayName"),
+                "agentLabel": b.get("agentLabel"),
+            }
+        )
+    if isinstance(match.get("white"), dict) and w.get("userId"):
+        legacy.append(
+            {
+                "seat": 2,
+                "userId": str(w["userId"]),
+                "displayName": w.get("displayName"),
+                "agentLabel": w.get("agentLabel"),
+            }
+        )
+    return legacy
+
+
+def _next_checkers_turn_uid(match: dict[str, Any], current_uid: str) -> str | None:
+    seats = _get_checkers_seats(match)
+    pc = _checkers_player_count(match)
+    if len(seats) != pc:
+        return None
+    ordered = sorted(seats, key=lambda x: x["seat"])
+    uids = [str(s["userId"]) for s in ordered]
+    try:
+        idx = uids.index(str(current_uid))
+    except ValueError:
+        return None
+    return uids[(idx + 1) % pc]
+
+
+def _checkers_winner_user_id(match: dict[str, Any], seat: int) -> str | None:
+    for s in _get_checkers_seats(match):
+        if int(s["seat"]) == seat:
+            return str(s["userId"])
+    return None
+
+
+def _checkers_camp_keys_by_seat(match: dict[str, Any]) -> dict[str, list[str]]:
+    pc = _checkers_player_count(match)
+    if pc == 2:
+        return {
+            "1": sorted(_checkers_hex_key(*c) for c in CHECKERS_P1_START),
+            "2": sorted(_checkers_hex_key(*c) for c in CHECKERS_P2_START),
+        }
+    homes = checkers_six_homes()
+    return {
+        str(i + 1): sorted(_checkers_hex_key(*c) for c in homes[i]) for i in range(6)
+    }
+
+
+def _checkers_fresh_board(player_count: int = 2) -> dict[str, int]:
+    b: dict[str, int] = {_checkers_hex_key(q, r): 0 for q, r in CHECKERS_STAR_ALL}
+    if player_count == 2:
+        for q, r in CHECKERS_P1_START:
+            b[_checkers_hex_key(q, r)] = 1
+        for q, r in CHECKERS_P2_START:
+            b[_checkers_hex_key(q, r)] = 2
+        return b
+    if player_count == 6:
+        for seat_idx, home in enumerate(checkers_six_homes(), start=1):
+            for q, r in home:
+                b[_checkers_hex_key(q, r)] = seat_idx
+    return b
+
+
+def _hex_dist(a: tuple[int, int], b: tuple[int, int]) -> int:
+    return (
+        abs(a[0] - b[0]) + abs(a[1] - b[1]) + abs((-a[0] - a[1]) - (-b[0] - b[1]))
+    ) // 2
+
+
+def _hex_jump_mid(a: tuple[int, int], c: tuple[int, int]) -> tuple[int, int] | None:
+    dq = c[0] - a[0]
+    dr = c[1] - a[1]
+    for dx, dy in _CHECKERS_HEX_DIRS:
+        if dq == 2 * dx and dr == 2 * dy:
+            return (a[0] + dx, a[1] + dy)
+    return None
+
+
+def _checkers_apply_path(
+    board: dict[str, int],
+    path: list[tuple[int, int]],
+    stone: int,
+) -> dict[str, int] | None:
+    if len(path) < 2:
+        return None
+    for q, r in path:
+        if _checkers_hex_key(q, r) not in _CHECKERS_VALID_KEYS:
+            return None
+    b_sim = dict(board)
+    pk0 = _checkers_hex_key(*path[0])
+    if b_sim.get(pk0) != stone:
+        return None
+    for i in range(1, len(path)):
+        a, c = path[i - 1], path[i]
+        ak, ck = _checkers_hex_key(*a), _checkers_hex_key(*c)
+        if b_sim.get(ck, 0) != 0:
+            return None
+        dist = _hex_dist(a, c)
+        if i == 1 and len(path) == 2 and dist == 1:
+            b_sim[ak] = 0
+            b_sim[ck] = stone
+            return b_sim
+        if dist != 2:
+            return None
+        mid = _hex_jump_mid(a, c)
+        if mid is None:
+            return None
+        mk = _checkers_hex_key(*mid)
+        if b_sim.get(mk, 0) == 0:
+            return None
+        b_sim[ak] = 0
+        b_sim[ck] = stone
+    return b_sim
+
+
+def _checkers_winner_stone(board: dict[str, int], player_count: int) -> int | None:
+    if player_count == 2:
+        p1_goal, p2_goal = _checkers_goal_key_lists()
+        if all(board.get(k, 0) == 1 for k in p1_goal):
+            return 1
+        if all(board.get(k, 0) == 2 for k in p2_goal):
+            return 2
+        return None
+    for seat in range(1, 7):
+        goal_cells = checkers_six_goal_indices(seat)
+        keys = [_checkers_hex_key(*c) for c in goal_cells]
+        if all(board.get(k, 0) == seat for k in keys):
+            return seat
+    return None
+
+
 def _stone_for_user(match: dict[str, Any], uid: str) -> int | None:
+    if match.get("rule") == CHECKERS_RULE:
+        for s in _get_checkers_seats(match):
+            if str(s.get("userId")) == str(uid):
+                return int(s["seat"])
+        return None
     b = match.get("black") or {}
     w = match.get("white") or {}
     if b.get("userId") == uid:
@@ -182,7 +402,7 @@ def _other_user_in_match(match: dict[str, Any], uid: str) -> str | None:
 
 def _match_to_public(match: dict[str, Any]) -> dict[str, Any]:
     """对外状态（棋盘真相）。"""
-    return {
+    pub: dict[str, Any] = {
         "id": match["id"],
         "rule": match.get("rule", "gomoku_15"),
         "boardSize": match.get("boardSize", GOMOKU_SIZE),
@@ -198,6 +418,14 @@ def _match_to_public(match: dict[str, Any]) -> dict[str, Any]:
         "createdAtMs": match.get("createdAtMs"),
         "updatedAtMs": match.get("updatedAtMs"),
     }
+    if match.get("rule") == CHECKERS_RULE:
+        pc = _checkers_player_count(match)
+        pub["checkersPlayerCount"] = pc
+        pub["checkersSeats"] = [
+            {k: v for k, v in s.items() if v is not None} for s in _get_checkers_seats(match)
+        ]
+        pub["checkersCampKeys"] = _checkers_camp_keys_by_seat(match)
+    return pub
 
 
 def _cell_ascii(stone: int) -> str:
@@ -210,11 +438,102 @@ def _cell_ascii(stone: int) -> str:
     return "?"
 
 
+def _agent_input_bundle_checkers(match: dict[str, Any], viewer_uid: str) -> dict[str, Any]:
+    pc = _checkers_player_count(match)
+    board: dict[str, int] = match.get("board") or _checkers_fresh_board(pc)
+    lines: list[str] = []
+    for k in sorted(board.keys(), key=lambda s: (int(s.split(",")[1]), int(s.split(",")[0]))):
+        v = board[k]
+        ch = "." if v == 0 else str(int(v))
+        lines.append(f"{k}: {ch}")
+    board_ascii = "\n".join(lines)
+    if pc == 2:
+        board_ascii_note = (
+            "中国跳棋（星形 121 孔）双人类 rule=checkers_chinese_star：轴向坐标 \"q,r\"。`.` 空，1/2 为两方棋子。"
+            "一步：走邻格；或沿六向直线连跳（跳过紧邻一子落空地，可连跳）。"
+            "胜：双方初始营在星形「对顶」两角；1 方占满 2 方初始营胜，反之亦然。"
+        )
+        s1, s2 = _checkers_start_key_lists()
+        g1, g2 = _checkers_goal_key_lists()
+        homes_txt = f"座位1 初始营: {s1}\n座位2 初始营: {s2}\n座位1 目标（须占满）: {g1}\n座位2 目标: {g2}"
+    else:
+        board_ascii_note = (
+            "中国跳棋 六人局（每人 10 子）rule=checkers_chinese_star：`.` 空，棋盘数字 1..6 为各方棋子。"
+            "行棋与双人相同。胜：某方 10 子全部落在其「对顶」营区（与对方初始区分处相对的一组孔）。"
+        )
+        camps = _checkers_camp_keys_by_seat(match)
+        homes_txt = "\n".join(f"座位{s} 初始孔: {camps[s]}" for s in sorted(camps.keys(), key=int))
+    stone = _stone_for_user(match, viewer_uid)
+    if stone is not None:
+        role = f"seat_{stone}"
+    else:
+        role = "spectator"
+    is_your_turn = bool(
+        match.get("status") == "running" and match.get("nextPlayerUserId") == viewer_uid and role != "spectator"
+    )
+    hist = match.get("moveHistory") or []
+    hist_lines: list[str] = []
+    for h in hist:
+        path = h.get("path")
+        if isinstance(path, list):
+            hist_lines.append(
+                f"#{h.get('index', 0)} stone={h.get('stone')} path={path} by={h.get('userId')}"
+            )
+    history_text = "\n".join(hist_lines) if hist_lines else "(no moves yet)"
+    output_contract_zh = (
+        "当 isYourTurn 为 true 时 POST /api/v1/matches/<id>/moves，body JSON 须含 **path**："
+        "[[q,r],...] 至少两点；相邻为平移一格；或每一步为跨越一子的一跳，可同一回合连跳。"
+        "解说可放 thought/caption 等键。"
+    )
+    output_contract_en = (
+        'If your turn: POST {"path":[[q,r],[q,r],...]}. If not: {"pass":true}.'
+    )
+    suggested_system_zh = f"你是中国跳棋 Agent（本局 {pc} 人）。轮到谁见 isYourTurn。" + output_contract_zh
+    suggested_user_zh = "\n\n".join(
+        [
+            f"matchId={match['id']} rule={CHECKERS_RULE} status={match.get('status')}",
+            f"viewerUserId={viewer_uid} role={role} isYourTurn={is_your_turn}",
+            board_ascii_note,
+            homes_txt,
+            board_ascii,
+            "moveHistory:\n" + history_text,
+            "nextPlayerUserId=" + str(match.get("nextPlayerUserId")),
+        ]
+    )
+    return {
+        "schemaVersion": 1,
+        "matchId": match["id"],
+        "rule": CHECKERS_RULE,
+        "viewerUserId": viewer_uid,
+        "role": role,
+        "isYourTurn": is_your_turn,
+        "status": match.get("status"),
+        "black": _public_player(match.get("black")),
+        "white": _public_player(match.get("white")),
+        "nextPlayerUserId": match.get("nextPlayerUserId"),
+        "board": board,
+        "boardAscii": board_ascii,
+        "boardAsciiLegendZh": board_ascii_note,
+        "moveHistory": hist,
+        "moveHistoryText": history_text,
+        "outputContractZh": output_contract_zh,
+        "outputContractEn": output_contract_en,
+        "suggestedSystemPromptZh": suggested_system_zh,
+        "suggestedUserMessageZh": suggested_user_zh,
+        "suggestedLlmMessages": [
+            {"role": "system", "content": suggested_system_zh},
+            {"role": "user", "content": suggested_user_zh},
+        ],
+    }
+
+
 def _agent_input_bundle(match: dict[str, Any], viewer_uid: str) -> dict[str, Any]:
     """
     供外部 LLM / Agent 使用的结构化输入：棋盘 ASCII、手顺、是否轮到你、统一输出契约。
     请求方须带与棋手一致的 X-User-Id，以便判定黑白与是否轮行。
     """
+    if match.get("rule") == CHECKERS_RULE:
+        return _agent_input_bundle_checkers(match, viewer_uid)
     board = match.get("board") or _empty_gomoku_board()
     header = "    " + "".join(str(x % 10) for x in range(GOMOKU_SIZE))
     rows = []
@@ -576,12 +895,27 @@ def create_match():
     now = now_ms()
     disp = sanitize_text(body.get("displayName", "匿名棋士"), max_len=16)
     agent_label = sanitize_text(body.get("agentLabel", ""), max_len=32)
+    rule = sanitize_text(body.get("rule", "gomoku_15"), max_len=40)
+    checkers_pc = 2
+    if rule == CHECKERS_RULE:
+        try:
+            checkers_pc = int(body.get("checkersPlayerCount", body.get("playerCount", 2)))
+        except (TypeError, ValueError):
+            checkers_pc = 2
+        if checkers_pc not in (2, 6):
+            checkers_pc = 2
+        brd: dict[str, int] | list[list[int]] = _checkers_fresh_board(checkers_pc)
+        bsz = len(_CHECKERS_VALID_KEYS)
+    else:
+        rule = "gomoku_15"
+        brd = _empty_gomoku_board()
+        bsz = GOMOKU_SIZE
 
-    match = {
+    match: dict[str, Any] = {
         "id": new_id("match"),
-        "rule": "gomoku_15",
-        "boardSize": GOMOKU_SIZE,
-        "board": _empty_gomoku_board(),
+        "rule": rule,
+        "boardSize": bsz,
+        "board": brd,
         "status": "open",
         "black": {
             "userId": uid,
@@ -597,6 +931,11 @@ def create_match():
         "createdAtMs": now,
         "updatedAtMs": now,
     }
+    if rule == CHECKERS_RULE:
+        match["checkersPlayerCount"] = checkers_pc
+        match["checkersSeats"] = [
+            {"seat": 1, "userId": uid, "displayName": disp, "agentLabel": agent_label or None},
+        ]
     db.setdefault("matches", []).append(match)
     save_db(db)
     return jsonify({"ok": True, "item": _match_to_public(match)})
@@ -631,6 +970,55 @@ def get_match(match_id: str):
     return jsonify({"ok": True, "item": pub})
 
 
+def _checkers_join_handler(
+    db: dict[str, Any],
+    m: dict[str, Any],
+    uid: str,
+    disp: str,
+    agent_label: str,
+) -> Any:
+    pc = _checkers_player_count(m)
+    if not isinstance(m.get("checkersSeats"), list) or not m["checkersSeats"]:
+        m["checkersSeats"] = [
+            {
+                "seat": int(x["seat"]),
+                "userId": str(x["userId"]),
+                "displayName": x.get("displayName"),
+                "agentLabel": x.get("agentLabel"),
+            }
+            for x in _get_checkers_seats(m)
+        ]
+    seats_list: list[dict[str, Any]] = m["checkersSeats"]
+    seated = {str(s["userId"]) for s in seats_list}
+    if str(uid) in seated:
+        return jsonify({"ok": False, "error": {"message": "already in match"}}), 400
+    if len(seats_list) >= pc:
+        return jsonify({"ok": False, "error": {"message": "match full"}}), 400
+
+    next_seat = len(seats_list) + 1
+    row = {
+        "seat": next_seat,
+        "userId": uid,
+        "displayName": disp,
+        "agentLabel": agent_label or None,
+    }
+    seats_list.append(row)
+
+    if pc == 2:
+        m["white"] = {
+            "userId": uid,
+            "displayName": disp,
+            "agentLabel": agent_label or None,
+        }
+    if len(seats_list) >= pc:
+        m["status"] = "running"
+        first = min(seats_list, key=lambda s: int(s["seat"]))
+        m["nextPlayerUserId"] = first["userId"]
+    m["updatedAtMs"] = now_ms()
+    save_db(db)
+    return jsonify({"ok": True, "item": _match_to_public(m)})
+
+
 @app.post("/api/v1/matches/<match_id>/join")
 def join_match(match_id: str):
     db = load_db()
@@ -642,12 +1030,18 @@ def join_match(match_id: str):
 
     uid = get_client_user_id()
     black_uid = (m.get("black") or {}).get("userId")
-    if uid == black_uid:
-        return jsonify({"ok": False, "error": {"message": "cannot play against yourself"}}), 400
 
     body = request.get_json(force=True, silent=False) or {}
     disp = sanitize_text(body.get("displayName", "匿名棋士"), max_len=16)
     agent_label = sanitize_text(body.get("agentLabel", ""), max_len=32)
+
+    if m.get("rule") == CHECKERS_RULE:
+        if str(uid) == str(black_uid):
+            return jsonify({"ok": False, "error": {"message": "cannot play against yourself"}}), 400
+        return _checkers_join_handler(db, m, uid, disp, agent_label)
+
+    if uid == black_uid:
+        return jsonify({"ok": False, "error": {"message": "cannot play against yourself"}}), 400
 
     m["white"] = {
         "userId": uid,
@@ -687,6 +1081,62 @@ def play_move(match_id: str):
         return jsonify({"ok": False, "error": {"message": "not your turn"}}), 403
 
     body = request.get_json(force=True, silent=False) or {}
+
+    if m.get("rule") == CHECKERS_RULE:
+        path_raw = body.get("path")
+        if not isinstance(path_raw, list) or len(path_raw) < 2:
+            return jsonify({"ok": False, "error": {"message": "invalid path"}}), 400
+        path: list[tuple[int, int]] = []
+        try:
+            for pt in path_raw:
+                if not isinstance(pt, (list, tuple)) or len(pt) != 2:
+                    raise ValueError("pt")
+                path.append((int(pt[0]), int(pt[1])))
+        except (TypeError, ValueError):
+            current_app.logger.warning("checkers move rejected: bad path match=%s body=%s", match_id, body)
+            return jsonify({"ok": False, "error": {"message": "invalid path"}}), 400
+
+        bmap = m.get("board")
+        pc_move = _checkers_player_count(m)
+        if not isinstance(bmap, dict):
+            bmap = _checkers_fresh_board(pc_move)
+        new_board = _checkers_apply_path(bmap, path, stone)
+        if not new_board:
+            current_app.logger.warning("checkers move rejected: illegal path match=%s", match_id)
+            return jsonify({"ok": False, "error": {"message": "illegal path"}}), 400
+
+        m["board"] = new_board
+        hist = m.setdefault("moveHistory", [])
+        danmu_text = _format_move_danmu_from_body(body)
+        entry = {
+            "index": len(hist),
+            "userId": uid,
+            "path": path_raw,
+            "stone": stone,
+            "atMs": now_ms(),
+        }
+        if danmu_text:
+            entry["thought"] = danmu_text
+        hist.append(entry)
+
+        wst = _checkers_winner_stone(new_board, pc_move)
+        if wst is not None:
+            m["status"] = "finished"
+            m["winnerStone"] = wst
+            m["winReason"] = "checkers_home"
+            m["nextPlayerUserId"] = None
+            m["winnerUserId"] = _checkers_winner_user_id(m, wst)
+        else:
+            nxt = _next_checkers_turn_uid(m, uid)
+            m["nextPlayerUserId"] = nxt
+
+        m["updatedAtMs"] = now_ms()
+        save_db(db)
+        pub = _match_to_public(m)
+        if _truthy_query("forAgent"):
+            pub["agentInput"] = _agent_input_bundle(m, get_client_user_id())
+        return jsonify({"ok": True, "item": pub})
+
     try:
         x = int(body.get("x"))
         y = int(body.get("y"))

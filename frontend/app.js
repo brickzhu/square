@@ -151,36 +151,8 @@ async function refresh() {
   await loadFeed({ append: false });
 }
 
-async function post() {
-  const title = document.getElementById("title").value || "";
-  const imageUrl = document.getElementById("imageUrl").value || "";
-  const text = document.getElementById("text").value || "";
-  const hint = document.getElementById("postHint");
-  hint.textContent = "发布中…";
-  try {
-    await api("/api/v1/posts", {
-      method: "POST",
-      body: JSON.stringify({
-        type: "pixel_strip",
-        title,
-        imageUrl,
-        text,
-        tags: ["养自己", "像素"],
-        displayName: "匿名小龙虾",
-      }),
-    });
-    document.getElementById("title").value = "";
-    document.getElementById("imageUrl").value = "";
-    document.getElementById("text").value = "";
-    hint.textContent = "已发布";
-    await refresh();
-  } catch (e) {
-    hint.textContent = `发布失败：${e.message}`;
-  }
-}
-
 async function demo() {
-  const hint = document.getElementById("postHint");
+  const hint = document.getElementById("demoHint");
   try {
     await api("/api/v1/demo", { method: "POST", body: "{}" });
     hint.textContent = "已生成示例";
@@ -191,7 +163,7 @@ async function demo() {
 }
 
 async function clearDemo() {
-  const hint = document.getElementById("postHint");
+  const hint = document.getElementById("demoHint");
   try {
     const data = await api("/api/v1/demo/clear", { method: "POST", body: "{}" });
     hint.textContent = data?.removed != null ? `已清除 ${data.removed} 条示例` : "已清除示例";
@@ -302,7 +274,8 @@ function initWorld() {
       super("plaza");
       this.booths = [];
       this.cat = null;
-      this.tipText = null;
+      this.stageCornerLabel = null;
+      this.stageSignLabel = null;
     }
 
     preload() {}
@@ -323,9 +296,31 @@ function initWorld() {
 
     create() {
       sceneRef = this;
+      /* 核心广场尺寸（喷泉、路、分区）以 (0,0) 居中；外围再铺大地砖，缩到最小也不会露出背景色 */
+      const TILE = 16;
+      const ZOOM_MIN = 0.42;
+      const plazaW = 80 * TILE;
+      const plazaH = 54 * TILE;
+      const hw = plazaW / 2;
+      const hh = plazaH / 2;
+
+      const gw = Math.max(1, this.scale.gameSize.width);
+      const gh = Math.max(1, this.scale.gameSize.height);
+      const spanHalf =
+        Math.max(
+          110 * TILE,
+          Math.ceil((Math.max(gw, gh) / ZOOM_MIN / 2) / TILE) * TILE + TILE,
+        );
+      const boundsHalfW = Math.max(hw + TILE * 2, spanHalf);
+      const boundsHalfH = Math.max(hh + TILE * 2, spanHalf);
+      const boundsW = boundsHalfW * 2;
+      const boundsH = boundsHalfH * 2;
+
       const cam = this.cameras.main;
       cam.setBackgroundColor("#3a332d");
-      cam.setZoom(2);
+      cam.setBounds(-boundsHalfW, -boundsHalfH, boundsW, boundsH);
+      /* 默认略缩小便于一览；滚轮可继续缩到全景 */
+      cam.setZoom(1.65);
       cam.roundPixels = true;
       cam.centerOn(0, 0);
 
@@ -465,36 +460,43 @@ function initWorld() {
         g.fillStyle(0xd6a84f, 1).fillRect(18, 10, 4, 2);
       });
 
-      const worldW = 72 * 16;
-      const worldH = 44 * 16;
-      const hw = worldW / 2;
-      const hh = worldH / 2;
-
-      for (let y = -hh; y < hh; y += 16) {
-        for (let x = -hw; x < hw; x += 16) {
-          const k = ((x + y) / 16) % 2 === 0 ? "tileA" : "tileB";
-          this.add.image(x, y, k).setOrigin(0, 0).setDepth(0);
+      const ground = this.add.graphics().setDepth(0);
+      for (let y = -boundsHalfH; y < boundsHalfH; y += TILE) {
+        for (let x = -boundsHalfW; x < boundsHalfW; x += TILE) {
+          const dark = (((x >> 4) + (y >> 4)) & 1) === 0;
+          ground.fillStyle(dark ? 0x5c5249 : 0x4a403a, 1).fillRect(x, y, TILE, TILE);
+        }
+      }
+      for (let y = -hh; y < hh; y += TILE) {
+        for (let x = -hw; x < hw; x += TILE) {
+          const darkA = (((x >> 4) + (y >> 4)) & 1) === 0;
+          this.add
+            .image(x, y, darkA ? "tileA" : "tileB")
+            .setOrigin(0, 0)
+            .setDepth(0);
         }
       }
 
-      /* —— 四象限主题色（压低透明度，像规划区） —— */
+      /* —— 四象限主题色：面积 = 原矩形 ×2（边长 ×√2），内沿仍贴环岛路口 —— */
       const zoneTint = (cx, cy, w, h, color, a) =>
         this.add.rectangle(cx, cy, w, h, color, a).setDepth(1).setStrokeStyle(2, 0x231c18, 0.22);
-      zoneTint(-200, -165, 400, 240, 0x6b8cae, 0.11); // STRIP · 偏冷
-      zoneTint(200, -165, 400, 240, 0xc1666b, 0.1); // AVATAR · 陶土
-      zoneTint(-200, 175, 400, 240, 0x4a8f5c, 0.09); // MATCH · 绿
-      zoneTint(200, 175, 400, 240, 0xd4963c, 0.11); // STAGE · 金
+      const ztw = Math.round(400 * Math.SQRT2);
+      const zth = Math.round(240 * Math.SQRT2);
+      zoneTint(-283, -215, ztw, zth, 0x6b8cae, 0.11); // STRIP · 偏冷
+      zoneTint(283, -215, ztw, zth, 0xc1666b, 0.1); // AVATAR · 陶土
+      zoneTint(-283, 225, ztw, zth, 0x4a8f5c, 0.09); // MATCH · 绿
+      zoneTint(283, 225, ztw, zth, 0xd4963c, 0.11); // STAGE · 金
 
       /* —— 十字主路 + 喷泉环岛感 —— */
       const roadAsp = 0x2c2622;
       const roadInner = 0x362f29;
-      const roadWMain = worldW - 64;
+      const roadWMain = plazaW - 64;
       const roadHBand = 76;
       const roadVBand = 56;
       this.add.rectangle(0, 0, roadWMain, roadHBand, roadAsp, 0.94).setDepth(2);
-      this.add.rectangle(0, 0, roadVBand, worldH - 120, roadAsp, 0.94).setDepth(2);
+      this.add.rectangle(0, 0, roadVBand, plazaH - 120, roadAsp, 0.94).setDepth(2);
       this.add.rectangle(0, 0, roadWMain - 10, roadHBand - 14, roadInner, 0.55).setDepth(2);
-      this.add.rectangle(0, 0, roadVBand - 12, worldH - 150, roadInner, 0.5).setDepth(2);
+      this.add.rectangle(0, 0, roadVBand - 12, plazaH - 150, roadInner, 0.5).setDepth(2);
 
       // 路口加深
       this.add.rectangle(0, 0, roadVBand + 8, roadHBand + 8, 0x1e1a18, 0.35).setDepth(2);
@@ -512,17 +514,17 @@ function initWorld() {
         const rad = (ang * Math.PI) / 180;
         const cx = Math.cos(rad) * (len / 2);
         const cy = Math.sin(rad) * (len / 2);
-        for (let t = -len / 2; t < len / 2; t += 16) {
+        for (let t = -len / 2; t < len / 2; t += TILE) {
           const px = Math.cos(rad) * t;
           const py = Math.sin(rad) * t;
           if (Math.hypot(px, py) < 52) continue;
           this.add.image(px, py, "tilePath").setOrigin(0.5).setDepth(3).setRotation(rad);
         }
       };
-      pathRay(-90, 220);
-      pathRay(90, 220);
-      pathRay(0, 320);
-      pathRay(180, 320);
+      pathRay(-90, Math.min(hh - 100, 268));
+      pathRay(90, Math.min(hh - 100, 268));
+      pathRay(0, Math.min(hw - 72, 380));
+      pathRay(180, Math.min(hw - 72, 380));
 
       // 车道虚线（东西向）
       for (let x = -roadWMain / 2 + 20; x < roadWMain / 2 - 20; x += 36) {
@@ -530,7 +532,7 @@ function initWorld() {
         this.add.rectangle(x, 0, 14, 3, 0xd4b896, 0.82).setDepth(3);
       }
       // 南北向短虚线
-      for (let y = -worldH / 2 + 80; y < worldH / 2 - 80; y += 40) {
+      for (let y = -plazaH / 2 + 80; y < plazaH / 2 - 80; y += 40) {
         if (Math.abs(y) < 40) continue;
         this.add.rectangle(0, y, 3, 12, 0xd4b896, 0.75).setDepth(3);
       }
@@ -708,14 +710,14 @@ function initWorld() {
 
       // 指示牌
       const signs = [
-        [-248, -18, "PIXEL"],
-        [230, -18, "AVATAR"],
-        [-255, 8, "MATCH"],
-        [222, 8, "STAGE"],
+        [-298, -22, "PIXEL"],
+        [288, -22, "AVATAR"],
+        [-298, 22, "MATCH"],
+        [288, 22, "OPEN"],
       ];
-      for (const [sx, sy, txt] of signs) {
-        const s = this.add.image(sx, sy, "signboard").setOrigin(0.5).setDepth(depthScenery + 1);
-        this.add
+      signs.forEach(([sx, sy, txt], i) => {
+        this.add.image(sx, sy, "signboard").setOrigin(0.5).setDepth(depthScenery + 1);
+        const signText = this.add
           .text(sx, sy - 1, txt, {
             fontFamily: "Press Start 2P, ui-monospace, monospace",
             fontSize: "6px",
@@ -723,7 +725,8 @@ function initWorld() {
           })
           .setOrigin(0.5)
           .setDepth(depthScenery + 2);
-      }
+        if (i === 3) this.stageSignLabel = signText;
+      });
 
       this.cat = this.add.image(-120, 90, "cat").setOrigin(0.5).setDepth(15);
       this.tweens.add({
@@ -736,6 +739,8 @@ function initWorld() {
         ease: "Sine.inOut",
       });
 
+      // Zone titles sit above plaza tiles / trees (6) but below booths (7+) so stalls are never covered.
+      const depthZoneTitle = 6.4;
       const mkLabel = (x, y, text, subHue) =>
         this.add
           .text(x, y, text, {
@@ -745,15 +750,16 @@ function initWorld() {
             backgroundColor: "rgba(35,28,24,0.78)",
             padding: { x: 8, y: 5 },
           })
-          .setDepth(20);
-      mkLabel(-248, -168, "STRIP ST", "#b8d4e8");
-      mkLabel(140, -168, "AVATAR ST", "#f0b8bc");
-      mkLabel(-248, 182, "MATCH ST", "#b8e0c4");
-      mkLabel(140, 182, "STAGE", "#ffe3a8");
+          .setDepth(depthZoneTitle);
+      mkLabel(-312, -292, "STRIP ST", "#b8d4e8");
+      mkLabel(300, -292, "AVATAR ST", "#f0b8bc");
+      mkLabel(-312, 302, "MATCH ST", "#b8e0c4");
+      this.stageCornerLabel = mkLabel(300, 302, "OPEN ST", "#ffe3a8");
 
       this.input.on("wheel", (_pointer, _go, _dx, dy) => {
         const c = this.cameras.main;
-        const raw = clamp(c.zoom + (dy > 0 ? -0.15 : 0.15), 1.2, 3.6);
+        const step = dy > 0 ? -0.12 : 0.12;
+        const raw = clamp(c.zoom + step, ZOOM_MIN, 4.2);
         c.setZoom(Math.round(raw * 40) / 40);
       });
 
@@ -764,26 +770,16 @@ function initWorld() {
         c.scrollY -= (p.position.y - p.prevPosition.y) / c.zoom;
       });
 
-      this.tipText = this.add
-        .text(12, 12, "地图还空着：点「生成示例」或在右侧发布一条作品", {
-          fontFamily: '"ZCOOL KuaiLe","Microsoft YaHei",sans-serif',
-          fontSize: "14px",
-          color: "#fef9f3",
-          backgroundColor: "rgba(35,28,24,0.78)",
-          padding: { x: 10, y: 6 },
-        })
-        .setScrollFactor(0)
-        .setDepth(1000);
-
-      const layoutTip = () => {
-        const h = this.cameras.main.height;
-        const pad = 12;
-        this.tipText.setY(Math.max(pad, h - pad - this.tipText.height));
-      };
-      layoutTip();
-      this.scale.on("resize", layoutTip);
-
       this.refreshBooths(state.posts);
+    }
+
+    applyStageZoneCopy(hasStagePosts) {
+      if (this.stageCornerLabel) {
+        this.stageCornerLabel.setText(hasStagePosts ? "STAGE" : "OPEN ST");
+      }
+      if (this.stageSignLabel) {
+        this.stageSignLabel.setText(hasStagePosts ? "STAGE" : "OPEN");
+      }
     }
 
     refreshBooths(posts) {
@@ -792,20 +788,24 @@ function initWorld() {
 
       const items = posts || [];
       const n = items.length;
-      this.tipText.setVisible(n === 0);
-      if (!n) return;
 
       const zoneOf = (p) => {
         const t = (p.type || "").toLowerCase();
         if (t.includes("avatar")) return "avatar";
         if (t.includes("match")) return "match";
+        if (t.includes("stage")) return "stage";
         return "strip";
       };
+
+      const stageCount = items.filter((p) => zoneOf(p) === "stage").length;
+      this.applyStageZoneCopy(stageCount > 0);
+
+      if (!n) return;
       const zones = {
-        strip: { x0: -240, y0: -120, cols: 3, dx: 88, dy: 64 },
-        avatar: { x0: 132, y0: -120, cols: 3, dx: 88, dy: 64 },
-        match: { x0: -240, y0: 120, cols: 3, dx: 88, dy: 64 },
-        stage: { x0: 132, y0: 120, cols: 3, dx: 88, dy: 64 },
+        strip: { x0: -498, y0: -302, cols: 4, dx: 94, dy: 66 },
+        avatar: { x0: 120, y0: -302, cols: 4, dx: 94, dy: 66 },
+        match: { x0: -498, y0: 186, cols: 4, dx: 94, dy: 66 },
+        stage: { x0: 120, y0: 186, cols: 4, dx: 94, dy: 66 },
       };
       const idx = { strip: 0, avatar: 0, match: 0, stage: 0 };
 
@@ -885,7 +885,6 @@ window.addEventListener("DOMContentLoaded", async () => {
   document.getElementById("refreshBtn").onclick = refresh;
   document.getElementById("demoBtn").onclick = demo;
   document.getElementById("clearDemoBtn").onclick = clearDemo;
-  document.getElementById("postBtn").onclick = post;
   document.getElementById("moreBtn").onclick = () => loadFeed({ append: true });
 
   document.getElementById("drawerClose").onclick = () => {

@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>五子棋擂台 · Square</title>
+    <title>跳棋擂台 · Square</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
@@ -12,20 +12,20 @@
     />
     <link rel="stylesheet" href="/static/styles.css" />
   </head>
-  <body class="gomoku-page">
+  <body class="gomoku-page checkers-page">
     <div class="app">
       <header class="topbar">
         <div class="brand">
-          <div class="brand__logo" aria-hidden="true">⚫</div>
+          <div class="brand__logo" aria-hidden="true">🔴</div>
           <div class="brand__text">
-            <div class="brand__title">五子棋擂台</div>
-            <div class="brand__sub">Agent 可代下 · 先创建再等对手加入</div>
+            <div class="brand__title">跳棋擂台</div>
+            <div class="brand__sub">星形 121 孔 · 双人或六人 · 高对比棋子 · Agent 可代下</div>
           </div>
         </div>
         <div class="topbar__actions">
           <a class="btn btn--ghost" href="/" style="text-decoration: none">回广场</a>
-          <a class="btn btn--ghost" href="/checkers.html" style="text-decoration: none">跳棋</a>
-          <button id="refreshBoardBtn" class="btn" type="button">刷新棋盘</button>
+          <a class="btn btn--ghost" href="/gomoku.html" style="text-decoration: none">五子棋</a>
+          <button id="refreshBoardBtn" class="btn" type="button">刷新</button>
         </div>
       </header>
 
@@ -37,9 +37,8 @@
               <span id="matchStatusBadge" class="card__badge">未连接</span>
             </div>
             <p id="matchInfo" class="card__lede">创建或加入对局后显示状态。</p>
-            <div class="gomoku-stage">
-              <div id="danmuLayer" class="gomoku-danmu-layer" aria-hidden="true"></div>
-              <div id="boardHost" class="gomoku-board-host" aria-label="五子棋棋盘"></div>
+            <div class="gomoku-stage checkers-stage">
+              <div id="boardHost" class="checkers-board-host" aria-label="跳棋棋盘"></div>
             </div>
             <p id="turnHint" class="hint" role="status"></p>
           </section>
@@ -54,23 +53,43 @@
                 <span class="field__label">Agent 标签（可选）</span>
                 <input id="agentLabel" class="input" placeholder="例如：openclaw-profile-A" />
               </label>
+              <p id="squareUidHint" class="hint" style="margin: 0 0 4px; line-height: 1.5">
+                本页行棋身份：<strong id="squareUidView">—</strong>
+                <br />
+                须与「创建 / 加入」请求时的浏览器身份一致；与测试台联用时用同一 uid（或在地址后加
+                <code>?uid=你的id</code>）。
+              </p>
+              <label class="field">
+                <span class="field__label">改成与对局一致的 uid</span>
+                <input id="checkersUidOverride" class="input" placeholder="例如 local_test_a" autocomplete="off" />
+              </label>
+              <div class="row" style="margin-top: 6px">
+                <button type="button" class="btn" id="checkersUidApplyBtn">应用并刷新本页</button>
+              </div>
+              <label class="field">
+                <span class="field__label">跳棋人数</span>
+                <select id="checkersPlayerMode" class="input">
+                  <option value="2">双人（各 15 子，2 人到齐开局）</option>
+                  <option value="6">六人（各 10 子，6 人到齐开局）</option>
+                </select>
+              </label>
               <div class="row" style="margin-top: 12px">
-                <button id="createMatchBtn" class="btn btn--primary" type="button">发起对局</button>
+                <button id="createMatchBtn" class="btn btn--primary" type="button">发起跳棋</button>
               </div>
               <div class="row">
-                <input id="joinMatchId" class="input" placeholder="对手场次 ID（match_…）" />
+                <input id="joinMatchId" class="input" placeholder="场次 ID（match_…）" />
                 <button id="joinMatchBtn" class="btn" type="button">加入</button>
               </div>
               <p id="actionHint" class="hint" role="status"></p>
             </section>
             <section class="card">
-              <div class="card__title" style="margin-bottom: 10px">可加入</div>
+              <div class="card__title" style="margin-bottom: 10px">可加入（跳棋）</div>
               <div id="openMatches" class="gomoku-open-list"></div>
             </section>
           </aside>
         </div>
       </main>
     </div>
-    <script src="/static/gomoku.js"></script>
+    <script src="/static/checkers.js"></script>
   </body>
 </html>

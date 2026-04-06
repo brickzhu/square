@@ -282,7 +282,7 @@ body::before {
   height: calc(100dvh - 220px);
   min-height: 360px;
   max-height: min(100dvh - 200px, 1200px);
-  /* Phaser 画布：nearest 放大，避免线性插值发糊 */
+  /* Phaser 画布：滚轮可缩小至全景；nearest 放大避免糊 */
   image-rendering: -webkit-optimize-contrast;
   image-rendering: crisp-edges;
   image-rendering: pixelated;
@@ -439,11 +439,57 @@ body::before {
   color: var(--muted);
   line-height: 1.5;
 }
-.composer .card__title {
-  margin: 0;
-}
-.composer.card {
+.agent-lounge.card {
   padding-bottom: 18px;
+}
+.agent-lounge__list {
+  margin: 0 0 14px;
+  padding-left: 1.2em;
+  font-size: 14px;
+  line-height: 1.55;
+  color: var(--muted);
+  display: grid;
+  gap: 10px;
+}
+.agent-lounge__list code {
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 12px;
+  color: var(--gh-beige);
+  background: rgba(0, 0, 0, 0.28);
+  padding: 2px 6px;
+  border-radius: 6px;
+}
+.agent-lounge__list strong {
+  color: var(--text);
+}
+.agent-lounge__codeWrap {
+  border: 3px solid var(--line);
+  border-radius: 12px;
+  overflow: hidden;
+  background: rgba(0, 0, 0, 0.32);
+}
+.agent-lounge__codeCaption {
+  font-family: var(--pixel);
+  font-size: 8px;
+  letter-spacing: 0.06em;
+  padding: 8px 10px;
+  color: var(--gh-mustard);
+  border-bottom: 2px solid var(--line);
+  background: rgba(0, 0, 0, 0.2);
+}
+.agent-lounge__code {
+  margin: 0;
+  padding: 12px 12px 14px;
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 12px;
+  line-height: 1.45;
+  color: rgba(255, 248, 240, 0.88);
+  overflow-x: auto;
+  white-space: pre;
+}
+.world__demo-status {
+  margin-top: 6px;
+  min-height: 1.25em;
 }
 
 .card,
@@ -733,9 +779,74 @@ body::before {
 }
 
 /* —— 五子棋擂台 —— */
+/* 移动端竖屏：棋盘单列全宽，操作区在下方；宽屏再双列 */
+body.gomoku-page .main {
+  max-width: 1120px;
+  padding: 12px 12px 28px;
+}
+body.gomoku-page .plaza-layout.gomoku-layout {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+@media (min-width: 900px) {
+  body.gomoku-page .plaza-layout.gomoku-layout {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) min(300px, 34vw);
+    gap: 18px;
+    align-items: start;
+  }
+  body.gomoku-page .plaza-layout__rail.gomoku-rail {
+    position: sticky;
+    top: 72px;
+    max-height: calc(100dvh - 88px);
+    overflow-y: auto;
+    padding-right: 4px;
+  }
+}
+@media (max-width: 599px) {
+  body.gomoku-page .topbar {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
+    padding: 12px;
+  }
+  body.gomoku-page .brand__sub {
+    display: none;
+  }
+  body.gomoku-page .topbar__actions {
+    width: 100%;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  body.gomoku-page .topbar__actions .btn {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+  body.gomoku-page .gomoku-layout .row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  body.gomoku-page .gomoku-layout .row .input,
+  body.gomoku-page .gomoku-layout .row .btn {
+    width: 100%;
+  }
+  body.gomoku-page .gomoku-panel .gomoku-stage {
+    max-width: 100%;
+  }
+  body.gomoku-page .gomoku-grid {
+    gap: 1px;
+    padding: 5px;
+  }
+  body.gomoku-page .gomoku-open-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+}
 .gomoku-panel .gomoku-stage {
   position: relative;
-  max-width: min(92vw, 520px);
+  max-width: min(100%, 520px);
   margin: 0 auto;
 }
 .gomoku-panel .gomoku-board-host {
@@ -749,11 +860,17 @@ body::before {
   pointer-events: none;
   overflow: hidden;
   border-radius: 10px;
+  /* 弹幕位移用 cqw，避免 iOS Safari 上 100vw 与 fill-mode 导致残留在屏内 */
+  container-type: inline-size;
+  container-name: gomoku-danmu;
 }
 .gomoku-danmu {
   position: absolute;
-  right: -8px;
-  max-width: min(90vw, 560px);
+  left: 100%;
+  right: auto;
+  margin-left: 6px;
+  max-width: min(92%, 360px);
+  width: max-content;
   padding: 6px 12px;
   border-radius: 16px;
   background: rgba(35, 28, 24, 0.72);
@@ -761,13 +878,19 @@ body::before {
   white-space: normal;
   word-break: break-word;
   font-family: var(--friendly);
-  font-size: 14px;
+  font-size: clamp(12px, 3.2vw, 14px);
   font-weight: 700;
   line-height: 1.35;
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.85);
+  transform: translateX(0);
+  -webkit-transform: translateX(0);
   animation-name: gomoku-danmu-slide;
+  -webkit-animation-name: gomoku-danmu-slide;
   animation-timing-function: linear;
+  -webkit-animation-timing-function: linear;
   animation-fill-mode: forwards;
+  -webkit-animation-fill-mode: forwards;
+  will-change: transform;
 }
 .gomoku-danmu--black {
   color: var(--gh-mustard);
@@ -779,10 +902,37 @@ body::before {
 }
 @keyframes gomoku-danmu-slide {
   from {
-    transform: translateX(105%);
+    transform: translateX(0);
   }
   to {
-    transform: translateX(calc(-100vw - 100%));
+    transform: translateX(calc(-100cqw - 100% - 24px));
+  }
+}
+@-webkit-keyframes gomoku-danmu-slide {
+  from {
+    -webkit-transform: translateX(0);
+  }
+  to {
+    -webkit-transform: translateX(calc(-100cqw - 100% - 24px));
+  }
+}
+/* 不支持容器查询单位的浏览器：用父层宽度近似（略逊但不残留） */
+@supports not (left: 1cqw) {
+  @keyframes gomoku-danmu-slide {
+    from {
+      transform: translateX(0);
+    }
+    to {
+      transform: translateX(calc(-100% - 100%));
+    }
+  }
+  @-webkit-keyframes gomoku-danmu-slide {
+    from {
+      -webkit-transform: translateX(0);
+    }
+    to {
+      -webkit-transform: translateX(calc(-100% - 100%));
+    }
   }
 }
 .gomoku-grid {
@@ -850,10 +1000,108 @@ body::before {
   }
   .gomoku-danmu {
     animation: none;
+    -webkit-animation: none;
     transform: none;
-    right: auto;
+    -webkit-transform: none;
     left: 8px;
+    right: auto;
     max-width: calc(100% - 16px);
+    margin-left: 0;
     white-space: normal;
   }
+}
+
+/* —— 跳棋（六角格） —— */
+.checkers-stage {
+  min-height: 260px;
+}
+.checkers-board-host {
+  overflow: auto;
+  max-width: 100%;
+  max-height: min(72vh, 640px);
+  display: flex;
+  justify-content: center;
+  padding: 8px 0;
+}
+.checkers-stage-inner {
+  position: relative;
+  flex-shrink: 0;
+}
+.checkers-hole {
+  position: absolute;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  padding: 0;
+  box-sizing: border-box;
+  border: 2px solid #2e2e33;
+  background: rgba(255, 255, 255, 0.72);
+  cursor: pointer;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+  z-index: 1;
+}
+.checkers-hole--camp-1 {
+  background: rgba(0, 168, 130, 0.2);
+  border-color: rgba(0, 120, 95, 0.55);
+}
+.checkers-hole--camp-2 {
+  background: rgba(210, 55, 90, 0.2);
+  border-color: rgba(160, 30, 60, 0.55);
+}
+.checkers-hole--camp-3 {
+  background: rgba(230, 165, 0, 0.22);
+  border-color: rgba(170, 110, 0, 0.55);
+}
+.checkers-hole--camp-4 {
+  background: rgba(90, 110, 230, 0.2);
+  border-color: rgba(45, 55, 170, 0.55);
+}
+.checkers-hole--camp-5 {
+  background: rgba(150, 70, 200, 0.2);
+  border-color: rgba(95, 40, 150, 0.55);
+}
+.checkers-hole--camp-6 {
+  background: rgba(0, 145, 200, 0.2);
+  border-color: rgba(0, 95, 145, 0.55);
+}
+/* 棋子：饱和色 + 深色描边 + 高光，保证对照棋盘与相互区分 */
+.checkers-hole--s1 {
+  background: radial-gradient(circle at 32% 28%, #baffea 0%, #00c896 42%, #006b52 100%);
+  border: 2px solid #08241c;
+  box-shadow: inset 0 2px 0 rgba(255, 255, 255, 0.55), 0 0 0 1px rgba(255, 255, 255, 0.9);
+}
+.checkers-hole--s2 {
+  background: radial-gradient(circle at 32% 28%, #ffd0dc 0%, #ff3d6a 40%, #9a0a2e 100%);
+  border: 2px solid #3a0a16;
+  box-shadow: inset 0 2px 0 rgba(255, 255, 255, 0.55), 0 0 0 1px rgba(255, 255, 255, 0.9);
+}
+.checkers-hole--s3 {
+  background: radial-gradient(circle at 32% 28%, #fff2b8 0%, #ffcc00 40%, #c26a00 100%);
+  border: 2px solid #3d2800;
+  box-shadow: inset 0 2px 0 rgba(255, 255, 255, 0.55), 0 0 0 1px rgba(255, 255, 255, 0.9);
+}
+.checkers-hole--s4 {
+  background: radial-gradient(circle at 32% 28%, #e4e8ff 0%, #5c6cff 42%, #2024a8 100%);
+  border: 2px solid #14183d;
+  box-shadow: inset 0 2px 0 rgba(255, 255, 255, 0.55), 0 0 0 1px rgba(255, 255, 255, 0.9);
+}
+.checkers-hole--s5 {
+  background: radial-gradient(circle at 32% 28%, #f2d4ff 0%, #c94dff 40%, #6a0fa8 100%);
+  border: 2px solid #2a0d3d;
+  box-shadow: inset 0 2px 0 rgba(255, 255, 255, 0.55), 0 0 0 1px rgba(255, 255, 255, 0.9);
+}
+.checkers-hole--s6 {
+  background: radial-gradient(circle at 32% 28%, #c8f2ff 0%, #00b4ff 40%, #005e9c 100%);
+  border: 2px solid #002a47;
+  box-shadow: inset 0 2px 0 rgba(255, 255, 255, 0.55), 0 0 0 1px rgba(255, 255, 255, 0.9);
+}
+.checkers-hole--sel {
+  outline: 2px solid #f5d000;
+  outline-offset: 1px;
+  z-index: 4;
+}
+.checkers-hole:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
