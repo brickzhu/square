@@ -444,37 +444,6 @@ async function onHoleClick(q, r) {
   }
 }
 
-async function loadOpenMatches() {
-  const box = document.getElementById("openMatches");
-  box.innerHTML = "";
-  try {
-    const data = await api("/api/v1/matches?status=open");
-    const items = (data.items || []).filter((m) => m.rule === CHECKERS_RULE);
-    if (!items.length) {
-      box.appendChild(el("div", "hint", "暂无等待中的跳棋场次"));
-      return;
-    }
-    for (const m of items) {
-      const row = el("div", "gomoku-open-row");
-      const pc = m.checkersPlayerCount || 2;
-      const n = Array.isArray(m.checkersSeats) ? m.checkersSeats.length : 1;
-      const mode = pc === 6 ? `六人 ${n}/6` : "双人";
-      const title = el("div", null, `${m.id} · ${mode} · 房主 ${m.black?.displayName || "?"}`);
-      const joinBtn = el("button", "btn btn--primary", "加入");
-      joinBtn.type = "button";
-      joinBtn.addEventListener("click", async () => {
-        document.getElementById("joinMatchId").value = m.id;
-        await doJoin();
-      });
-      row.appendChild(title);
-      row.appendChild(joinBtn);
-      box.appendChild(row);
-    }
-  } catch (e) {
-    box.appendChild(el("div", "hint", `加载失败：${e.message || e}`));
-  }
-}
-
 async function doCreate() {
   const hint = document.getElementById("actionHint");
   hint.textContent = "";
@@ -498,7 +467,6 @@ async function doCreate() {
     startPoll(watchingId);
     hint.textContent =
       checkersPlayerCount === 6 ? "已开六人局，把 ID 给另 5 位依次加入" : "已创建双人跳棋，把 ID 给对手加入";
-    await loadOpenMatches();
   } catch (e) {
     hint.textContent = String(e.message || e);
   }
@@ -526,7 +494,6 @@ async function doJoin() {
       (data.item?.checkersPlayerCount || 2) === 6 && data.item?.status === "open"
         ? `已入座 ${data.item?.checkersSeats?.length || 0}/6`
         : "已加入，座位1先手";
-    await loadOpenMatches();
   } catch (e) {
     hint.textContent = String(e.message || e);
   }
@@ -569,7 +536,6 @@ window.addEventListener("DOMContentLoaded", () => {
   if (uidView) uidView.textContent = getSquareUserId();
 
   ensureBoard(null);
-  loadOpenMatches();
 
   const q = new URLSearchParams(location.search).get("match");
   if (q) {
