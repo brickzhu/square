@@ -102,6 +102,11 @@ function matchStatusZh(status) {
   return status || "";
 }
 
+/** 示例对局：只在用于教学的棋盘页可见，首页地图与动态不展示 */
+function isDemoMatch(m) {
+  return !!(m && m.renderSpec && m.renderSpec.demo === true);
+}
+
 /** 仅决定「帖子」摊位落在哪一区；竞技区单独由 matches 渲染 */
 function boothZoneForPost(p) {
   const t = (p.type || "").toLowerCase();
@@ -214,6 +219,7 @@ function rebuildFeedList() {
     if (zf === "all" || boothZoneForPost(p) === zf) entries.push({ kind: "post", item: p });
   }
   for (const m of worldState.matches || []) {
+    if (isDemoMatch(m)) continue;
     if (zf === "all" || zf === "match") entries.push({ kind: "match", item: m });
   }
   entries.sort((a, b) => feedEntrySortKey(b) - feedEntrySortKey(a));
@@ -313,7 +319,9 @@ async function loadFeed({ append = false } = {}) {
   let matchesForMap = [];
   try {
     const md = await api("/api/v1/matches");
-    matchesForMap = (md.items || []).filter((m) => m.status === "open" || m.status === "running");
+    matchesForMap = (md.items || []).filter(
+      (m) => !isDemoMatch(m) && (m.status === "open" || m.status === "running"),
+    );
   } catch {
     matchesForMap = [];
   }
@@ -350,7 +358,10 @@ async function clearDemo() {
   const hint = document.getElementById("demoHint");
   try {
     const data = await api("/api/v1/demo/clear", { method: "POST", body: "{}" });
-    hint.textContent = data?.removed != null ? `已清除 ${data.removed} 条示例` : "已清除示例";
+    const rp = data?.removed ?? 0;
+    const rm = data?.removedMatches ?? 0;
+    hint.textContent =
+      rp > 0 || rm > 0 ? `已清除示例帖 ${rp} 条、示例对局 ${rm} 场` : "没有可清除的示例";
     await refresh();
   } catch (e) {
     hint.textContent = `清除示例失败：${e.message}`;

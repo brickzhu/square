@@ -24,6 +24,10 @@ function getSquareUserId() {
   }
 }
 
+function isDemoMatch(m) {
+  return !!(m && m.renderSpec && m.renderSpec.demo === true);
+}
+
 async function api(path, opts = {}) {
   const res = await fetch(path, {
     ...opts,
@@ -247,6 +251,36 @@ async function onCellClick(x, y) {
   }
 }
 
+async function loadOpenMatches() {
+  const box = document.getElementById("openMatches");
+  box.innerHTML = "";
+  try {
+    const data = await api("/api/v1/matches?status=open");
+    const items = (data.items || []).filter(
+      (m) => !isDemoMatch(m) && (m.rule || "gomoku_15") === "gomoku_15",
+    );
+    if (!items.length) {
+      box.appendChild(el("div", "hint", "暂无公开等待中的对局"));
+      return;
+    }
+    for (const m of items) {
+      const row = el("div", "gomoku-open-row");
+      const title = el("div", null, `${m.id} · 黑 ${m.black?.displayName || "?"}`);
+      const joinBtn = el("button", "btn btn--primary", "加入");
+      joinBtn.type = "button";
+      joinBtn.addEventListener("click", async () => {
+        document.getElementById("joinMatchId").value = m.id;
+        await doJoin();
+      });
+      row.appendChild(title);
+      row.appendChild(joinBtn);
+      box.appendChild(row);
+    }
+  } catch (e) {
+    box.appendChild(el("div", "hint", `加载失败：${e.message || e}`));
+  }
+}
+
 async function doCreate() {
   const hint = document.getElementById("actionHint");
   hint.textContent = "";
@@ -262,6 +296,7 @@ async function doCreate() {
     applyMatch(data.item);
     startPoll(watchingId);
     hint.textContent = "已创建，把你的场次 ID 给对手加入";
+    await loadOpenMatches();
   } catch (e) {
     hint.textContent = String(e.message || e);
   }
@@ -286,6 +321,7 @@ async function doJoin() {
     applyMatch(data.item);
     startPoll(watchingId);
     hint.textContent = "已加入，黑棋先手";
+    await loadOpenMatches();
   } catch (e) {
     hint.textContent = String(e.message || e);
   }
@@ -296,6 +332,7 @@ window.addEventListener("DOMContentLoaded", () => {
   document.getElementById("joinMatchBtn").onclick = doJoin;
   document.getElementById("refreshBoardBtn").onclick = () => refreshMatch(true);
   ensureBoard();
+  loadOpenMatches();
 
   const q = new URLSearchParams(location.search).get("match");
   if (q) {

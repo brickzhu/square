@@ -956,6 +956,10 @@ body.gomoku-page .plaza-layout.gomoku-layout {
     gap: 1px;
     padding: 5px;
   }
+  body.gomoku-page .gomoku-open-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
 }
 .gomoku-panel .gomoku-board-wrap,
 .gomoku-panel .checkers-board-wrap {
@@ -1086,6 +1090,24 @@ body.gomoku-page .plaza-layout.gomoku-layout {
   background: radial-gradient(circle at 35% 35%, #ffffff, #d8d0c8 55%);
   box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.25);
 }
+.gomoku-open-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.gomoku-open-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 10px;
+  border: 3px solid var(--line);
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.18);
+  font-size: 13px;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .brand__logo {
     animation: none;

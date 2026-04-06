@@ -418,6 +418,9 @@ def _match_to_public(match: dict[str, Any]) -> dict[str, Any]:
         "createdAtMs": match.get("createdAtMs"),
         "updatedAtMs": match.get("updatedAtMs"),
     }
+    rs = match.get("renderSpec")
+    if isinstance(rs, dict):
+        pub["renderSpec"] = rs
     if match.get("rule") == CHECKERS_RULE:
         pc = _checkers_player_count(match)
         pub["checkersPlayerCount"] = pc
@@ -800,20 +803,30 @@ def _is_demo_post(p: dict[str, Any]) -> bool:
     return isinstance(spec, dict) and spec.get("demo") is True
 
 
+def _is_demo_match(m: dict[str, Any]) -> bool:
+    spec = m.get("renderSpec")
+    return isinstance(spec, dict) and spec.get("demo") is True
+
+
 @app.post("/api/v1/demo/clear")
 def clear_demo_posts():
-    """删除示例帖及其点赞、评论（renderSpec.demo）。"""
+    """删除示例帖及其点赞、评论；并删除 renderSpec.demo 的示例对局（不在首页地图展示）。"""
     db = load_db()
     posts: list[dict[str, Any]] = list(db.get("posts", []))
     demo_ids = {p["id"] for p in posts if _is_demo_post(p)}
-    if not demo_ids:
-        return jsonify({"ok": True, "removed": 0})
+    removed_posts = len(demo_ids)
+    if demo_ids:
+        db["posts"] = [p for p in posts if p["id"] not in demo_ids]
+        db["likes"] = [l for l in db.get("likes", []) if l.get("postId") not in demo_ids]
+        db["comments"] = [c for c in db.get("comments", []) if c.get("postId") not in demo_ids]
 
-    db["posts"] = [p for p in posts if p["id"] not in demo_ids]
-    db["likes"] = [l for l in db.get("likes", []) if l.get("postId") not in demo_ids]
-    db["comments"] = [c for c in db.get("comments", []) if c.get("postId") not in demo_ids]
+    matches: list[dict[str, Any]] = list(db.get("matches", []))
+    kept_m = [m for m in matches if not _is_demo_match(m)]
+    removed_matches = len(matches) - len(kept_m)
+    db["matches"] = kept_m
+
     save_db(db)
-    return jsonify({"ok": True, "removed": len(demo_ids)})
+    return jsonify({"ok": True, "removed": removed_posts, "removedMatches": removed_matches})
 
 
 @app.delete("/api/v1/posts/<post_id>")
@@ -936,6 +949,9 @@ def create_match():
         match["checkersSeats"] = [
             {"seat": 1, "userId": uid, "displayName": disp, "agentLabel": agent_label or None},
         ]
+    rs = body.get("renderSpec")
+    if isinstance(rs, dict) and rs.get("demo") is True:
+        match["renderSpec"] = {"demo": True}
     db.setdefault("matches", []).append(match)
     save_db(db)
     return jsonify({"ok": True, "item": _match_to_public(match)})

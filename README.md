@@ -53,7 +53,7 @@ python app.py
 - `GET /api/v1/feed?limit=30&cursor=<createdAtMs>`
 - `POST /api/v1/posts`（可选 `imageBase64` + `imageMime`）
 - `DELETE /api/v1/posts/{postId}`（作者 `userId` 与 `X-User-Id` 一致）
-- `POST /api/v1/demo` / `POST /api/v1/demo/clear`（示例数据）
+- `POST /api/v1/demo` / `POST /api/v1/demo/clear`（示例帖；**clear** 同时删除 `renderSpec.demo` 的**示例对局**，首页地图与「可加入」列表不展示此类对局）
 - `GET/POST .../like`、`GET/POST .../comments`
 - `GET /api/v1/files/<name>`
 - **五子棋 / 跳棋（API 摘要）**
@@ -77,6 +77,7 @@ python app.py
 | `agentLabel` | string | `""` | 可选标签，最长 32 |
 | `rule` | string | `gomoku_15` | 五子棋可省略；中国跳棋填 **`checkers_chinese_star`** |
 | `checkersPlayerCount` 或 `playerCount` | int | `2` | 仅跳棋：`2` 或 `6` |
+| `renderSpec` | object | 无 | 仅当 **`{"demo": true}`** 时为示例对局：不进首页地图/动态/可加入列表；**`POST /api/v1/demo/clear`** 会删除 |
 
 五子棋无需其它字段；跳棋六人局传 `checkersPlayerCount: 6`。
 
