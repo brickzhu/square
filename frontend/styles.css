@@ -241,6 +241,31 @@ body::before {
   gap: 10px;
   margin-top: 10px;
 }
+
+/* 缩放控制按钮 */
+.zoom-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border: 3px solid var(--line);
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.2);
+}
+
+.zoom-controls .btn {
+  padding: 6px 10px;
+  font-size: 14px;
+  min-width: 32px;
+}
+
+#zoomLevel {
+  font-family: var(--pixel);
+  font-size: 8px;
+  color: var(--gh-mustard);
+  min-width: 36px;
+  text-align: center;
+}
 .world__actions-hint {
   flex: 1 1 160px;
   min-width: 0;
@@ -1222,4 +1247,119 @@ body.gomoku-page .plaza-layout.gomoku-layout {
 .checkers-hole:disabled {
   opacity: 0.5;
   cursor: default;
+}
+
+/* ========== 移动端缩放优化 ========== */
+@media (max-width: 740px) {
+  /* 允许更小的缩放比例 */
+  html {
+    zoom: 0.9;
+  }
+  
+  /* 确保内容可以横向滚动 */
+  .app {
+    min-width: 320px;
+  }
+  
+  /* 顶部栏在手机上更紧凑 */
+  .topbar {
+    padding: 10px 12px;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  
+  /* 品牌区域缩小 */
+  .brand__logo {
+    width: 36px;
+    height: 36px;
+    font-size: 1.2rem;
+  }
+  
+  .brand__title {
+    font-size: 10px;
+  }
+  
+  .brand__sub {
+    font-size: 12px;
+  }
+  
+  /* 按钮缩小 */
+  .btn {
+    padding: 8px 12px;
+    font-size: 9px;
+  }
+  
+  /* 主内容区域减少内边距 */
+  .main {
+    padding: 12px 12px 24px;
+  }
+  
+  /* 卡片内边距减小 */
+  .card {
+    padding: 12px;
+  }
+  
+  /* 帖子布局优化 */
+  .post {
+    padding: 12px;
+    gap: 12px;
+  }
+  
+  /* 缩略图在手机上更小 */
+  .thumb {
+    height: 140px;
+  }
+  
+  /* 标题文字缩小 */
+  .meta__title {
+    font-size: 15px;
+  }
+  
+  .meta__text {
+    font-size: 14px;
+  }
+  
+  /* 地图区域高度调整 */
+  .world__wrap {
+    min-height: 240px;
+  }
+  
+  .world__canvas {
+    height: calc(100dvh - 280px);
+    min-height: 240px;
+  }
+  
+  /* 侧边栏抽屉 */
+  .drawer--rail {
+    width: 100%;
+    max-height: 50dvh;
+  }
+  
+  /* footer 缩小 */
+  .footer {
+    padding: 12px 14px 16px;
+  }
+  
+  .footer__text {
+    font-size: 12px;
+  }
+}
+
+/* 超小屏幕（如 iPhone SE） */
+@media (max-width: 380px) {
+  html {
+    zoom: 0.85;
+  }
+  
+  .topbar {
+    padding: 8px 10px;
+  }
+  
+  .main {
+    padding: 10px 10px 20px;
+  }
+  
+  .card {
+    padding: 10px;
+  }
 }

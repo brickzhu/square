@@ -792,8 +792,8 @@ function initWorld() {
       const cam = this.cameras.main;
       cam.setBackgroundColor("#3a332d");
       cam.setBounds(-boundsHalfW, -boundsHalfH, boundsW, boundsH);
-      /* 默认略缩小便于一览；滚轮可继续缩到全景 */
-      cam.setZoom(1.65);
+      /* 默认 60% 缩放，移动端友好视角 */
+      cam.setZoom(0.6);
       cam.roundPixels = true;
       cam.centerOn(0, 0);
 
@@ -1426,7 +1426,51 @@ function initWorld() {
   };
 
   // eslint-disable-next-line no-undef
-  new Phaser.Game(config);
+  const game = new Phaser.Game(config);
+  
+  // 绑定缩放控制到 worldState
+  const ZOOM_STEP = 0.2;
+  const ZOOM_MIN_BTN = 0.4;
+  const ZOOM_MAX_BTN = 3.0;
+  
+  state.setZoom = (zoom) => {
+    if (sceneRef && sceneRef.cameras && sceneRef.cameras.main) {
+      sceneRef.cameras.main.setZoom(zoom);
+      return true;
+    }
+    return false;
+  };
+  
+  state.getZoom = () => {
+    if (sceneRef && sceneRef.cameras && sceneRef.cameras.main) {
+      return sceneRef.cameras.main.zoom;
+    }
+    return 1;
+  };
+  
+  state.zoomIn = () => {
+    const cam = sceneRef?.cameras?.main;
+    if (!cam) return false;
+    const newZoom = Math.min(ZOOM_MAX_BTN, cam.zoom + ZOOM_STEP);
+    cam.setZoom(Math.round(newZoom * 40) / 40);
+    return true;
+  };
+  
+  state.zoomOut = () => {
+    const cam = sceneRef?.cameras?.main;
+    if (!cam) return false;
+    const newZoom = Math.max(ZOOM_MIN_BTN, cam.zoom - ZOOM_STEP);
+    cam.setZoom(Math.round(newZoom * 40) / 40);
+    return true;
+  };
+  
+  state.zoomReset = () => {
+    const cam = sceneRef?.cameras?.main;
+    if (!cam) return false;
+    cam.setZoom(1);
+    return true;
+  };
+  
   return state;
 }
 
@@ -1478,6 +1522,51 @@ window.addEventListener("DOMContentLoaded", async () => {
     document.getElementById("drawer").classList.add("hidden");
     await refresh();
   };
+
+  // ====== 方案 C: 缩放按钮控制 ======
+  const zoomOutBtn = document.getElementById("zoomOutBtn");
+  const zoomInBtn = document.getElementById("zoomInBtn");
+  const zoomResetBtn = document.getElementById("zoomResetBtn");
+  const zoomLevelDisplay = document.getElementById("zoomLevel");
+
+  function updateZoomLevel() {
+    if (worldState && worldState.getZoom && zoomLevelDisplay) {
+      const zoom = worldState.getZoom();
+      zoomLevelDisplay.textContent = Math.round(zoom * 100) + "%";
+    }
+  }
+
+  if (zoomInBtn) {
+    zoomInBtn.onclick = () => {
+      if (worldState && worldState.zoomIn) {
+        worldState.zoomIn();
+        updateZoomLevel();
+      }
+    };
+  }
+
+  if (zoomOutBtn) {
+    zoomOutBtn.onclick = () => {
+      if (worldState && worldState.zoomOut) {
+        worldState.zoomOut();
+        updateZoomLevel();
+      }
+    };
+  }
+
+  if (zoomResetBtn) {
+    zoomResetBtn.onclick = () => {
+      if (worldState && worldState.zoomReset) {
+        worldState.zoomReset();
+        updateZoomLevel();
+      }
+    };
+  }
+
+  // 初始更新缩放级别
+  setTimeout(updateZoomLevel, 1000);
+  // 定期同步
+  setInterval(updateZoomLevel, 2000);
 
   await refresh();
 });

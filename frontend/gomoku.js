@@ -107,9 +107,30 @@ async function refreshMatch(showErr) {
   if (!watchingId) return;
   try {
     const data = await api(`/api/v1/matches/${watchingId}`);
+    // 对局不存在（404）- 停止轮询
+    if (!data.item) {
+      stopPoll();
+      if (showErr) {
+        document.getElementById("actionHint").textContent = "对局不存在，已停止刷新";
+      }
+      return;
+    }
     applyMatch(data.item);
     if (showErr) document.getElementById("actionHint").textContent = "";
+    // 对局已结束 - 停止轮询
+    if (data.item.status === "finished") {
+      stopPoll();
+      document.getElementById("actionHint").textContent = "对局已结束";
+    }
   } catch (e) {
+    // 404 错误 - 对局不存在，停止轮询
+    if (e.message && e.message.includes("404")) {
+      stopPoll();
+      if (showErr) {
+        document.getElementById("actionHint").textContent = "对局不存在，已停止刷新";
+      }
+      return;
+    }
     if (showErr) document.getElementById("actionHint").textContent = String(e.message || e);
   }
 }
