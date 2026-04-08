@@ -6,13 +6,17 @@ import json
 import os
 import re
 import secrets
+import threading
 import time
-from dataclasses import dataclass
+import urllib.error
+import urllib.request
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from flask import Flask, current_app, jsonify, request, send_from_directory
 from flask_cors import CORS
+from flask_sock import Sock
 
 from checkers_star_geometry import (
     CHECKERS_P1_GOAL,
@@ -146,11 +150,144 @@ def _format_move_danmu_from_body(body: dict[str, Any]) -> str:
     return merged
 
 
+# 入局方可选填 agentHookUrl / agentHookToken（B：广场 POST 到你的 OpenClaw hooks）；永不进公开 JSON
+_AGENT_PRIVATE_KEYS = frozenset({"webhookUrl", "agentHookUrl", "agentHookToken"})
+
+
 def _public_player(side: dict[str, Any] | None) -> dict[str, Any] | None:
     if not side:
         return side
-    # 历史数据或旧字段中可能含 webhookUrl，对外永不返回
-    return {k: v for k, v in side.items() if k != "webhookUrl"}
+    return {k: v for k, v in side.items() if k not in _AGENT_PRIVATE_KEYS}
+
+
+def _public_seat(s: dict[str, Any]) -> dict[str, Any]:
+    return {k: v for k, v in s.items() if v is not None and k not in _AGENT_PRIVATE_KEYS}
+
+
+def _optional_hook_from_body(body: dict[str, Any] | None) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    if not isinstance(body, dict):
+        return out
+    url = str(body.get("agentHookUrl") or "").strip()
+    if url:
+        out["agentHookUrl"] = url[:2048]
+    tok = str(body.get("agentHookToken") or "").strip()
+    if tok:
+        out["agentHookToken"] = tok[:512]
+    return out
+
+
+@dataclass
+class _WsAgentClient:
+    """A：Agent 出站 WebSocket 订阅者。"""
+
+    ws: Any
+    user_id: str
+    match_ids: set[str] = field(default_factory=set)
+
+
+_ws_lock = threading.Lock()
+_ws_clients: list[_WsAgentClient] = []
+
+
+def _ws_register(client: _WsAgentClient) -> None:
+    with _ws_lock:
+        _ws_clients.append(client)
+
+
+def _ws_unregister(client: _WsAgentClient) -> None:
+    with _ws_lock:
+        try:
+            _ws_clients.remove(client)
+        except ValueError:
+            pass
+
+
+def _broadcast_match_ws(match: dict[str, Any]) -> None:
+    mid = match.get("id")
+    if not mid:
+        return
+    with _ws_lock:
+        targets = [c for c in _ws_clients if mid in c.match_ids]
+    for c in targets:
+        try:
+            uid = c.user_id
+            payload = {
+                "type": "match.updated",
+                "event": "match.updated",
+                "matchId": mid,
+                "item": _match_to_public(match),
+                "agentInput": _agent_input_bundle(match, uid),
+            }
+            c.ws.send(json.dumps(payload, ensure_ascii=False))
+        except Exception:
+            pass
+
+
+def _iter_players_with_hooks(match: dict[str, Any]) -> list[tuple[str, str, str]]:
+    """(userId, hookUrl, bearerToken) — 含五子棋黑白与跳棋各座位。"""
+    out: list[tuple[str, str, str]] = []
+
+    def take(side: dict[str, Any] | None) -> None:
+        if not isinstance(side, dict):
+            return
+        uid = side.get("userId")
+        url = str(side.get("agentHookUrl") or "").strip()
+        if not uid or not url:
+            return
+        tok = str(side.get("agentHookToken") or "").strip()
+        out.append((str(uid), url[:2048], tok[:512] if tok else ""))
+
+    take(match.get("black"))
+    take(match.get("white"))
+    if match.get("rule") == CHECKERS_RULE:
+        for s in _get_checkers_seats(match):
+            if isinstance(s, dict):
+                take(s)
+    return out
+
+
+def _schedule_agent_hook_post(url: str, token: str, payload: dict[str, Any]) -> None:
+    def run() -> None:
+        try:
+            raw = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+            req = urllib.request.Request(
+                url,
+                data=raw,
+                method="POST",
+                headers={"Content-Type": "application/json; charset=utf-8"},
+            )
+            if token:
+                req.add_header("Authorization", f"Bearer {token}")
+            with urllib.request.urlopen(req, timeout=12.0) as resp:
+                resp.read()
+        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError) as e:
+            try:
+                app.logger.warning("agentHookUrl POST failed: %s", e)
+            except Exception:
+                pass
+
+    threading.Thread(target=run, daemon=True).start()
+
+
+def _fire_match_agent_hooks(match: dict[str, Any]) -> None:
+    for uid, url, tok in _iter_players_with_hooks(match):
+        payload = {
+            "source": "square",
+            "type": "match.updated",
+            "event": "match.updated",
+            "recipientUserId": uid,
+            "matchId": match.get("id"),
+            "item": _match_to_public(match),
+            "agentInput": _agent_input_bundle(match, uid),
+        }
+        _schedule_agent_hook_post(url, tok, payload)
+
+
+def _notify_match_agent_push(match: dict[str, Any]) -> None:
+    """对局变更后：推 WS（A）并异步 POST agentHookUrl（B）。"""
+    _broadcast_match_ws(match)
+    _fire_match_agent_hooks(match)
 
 
 def _empty_gomoku_board() -> list[list[int]]:
@@ -424,9 +561,7 @@ def _match_to_public(match: dict[str, Any]) -> dict[str, Any]:
     if match.get("rule") == CHECKERS_RULE:
         pc = _checkers_player_count(match)
         pub["checkersPlayerCount"] = pc
-        pub["checkersSeats"] = [
-            {k: v for k, v in s.items() if v is not None} for s in _get_checkers_seats(match)
-        ]
+        pub["checkersSeats"] = [_public_seat(s) for s in _get_checkers_seats(match)]
         pub["checkersCampKeys"] = _checkers_camp_keys_by_seat(match)
     return pub
 
@@ -623,6 +758,7 @@ def _agent_input_bundle(match: dict[str, Any], viewer_uid: str) -> dict[str, Any
 
 app = Flask(__name__, static_folder=str(SQUARE_ROOT / "frontend"), static_url_path="/")
 CORS(app)
+sock = Sock(app)
 
 
 @app.get("/health")
@@ -934,6 +1070,7 @@ def create_match():
             "userId": uid,
             "displayName": disp,
             "agentLabel": agent_label or None,
+            **_optional_hook_from_body(body),
         },
         "white": None,
         "nextPlayerUserId": None,
@@ -947,7 +1084,13 @@ def create_match():
     if rule == CHECKERS_RULE:
         match["checkersPlayerCount"] = checkers_pc
         match["checkersSeats"] = [
-            {"seat": 1, "userId": uid, "displayName": disp, "agentLabel": agent_label or None},
+            {
+                "seat": 1,
+                "userId": uid,
+                "displayName": disp,
+                "agentLabel": agent_label or None,
+                **_optional_hook_from_body(body),
+            },
         ]
     rs = body.get("renderSpec")
     if isinstance(rs, dict) and rs.get("demo") is True:
@@ -992,6 +1135,7 @@ def _checkers_join_handler(
     uid: str,
     disp: str,
     agent_label: str,
+    hook_fields: dict[str, Any],
 ) -> Any:
     pc = _checkers_player_count(m)
     if not isinstance(m.get("checkersSeats"), list) or not m["checkersSeats"]:
@@ -1017,6 +1161,7 @@ def _checkers_join_handler(
         "userId": uid,
         "displayName": disp,
         "agentLabel": agent_label or None,
+        **hook_fields,
     }
     seats_list.append(row)
 
@@ -1025,6 +1170,7 @@ def _checkers_join_handler(
             "userId": uid,
             "displayName": disp,
             "agentLabel": agent_label or None,
+            **hook_fields,
         }
     if len(seats_list) >= pc:
         m["status"] = "running"
@@ -1032,6 +1178,7 @@ def _checkers_join_handler(
         m["nextPlayerUserId"] = first["userId"]
     m["updatedAtMs"] = now_ms()
     save_db(db)
+    _notify_match_agent_push(m)
     return jsonify({"ok": True, "item": _match_to_public(m)})
 
 
@@ -1054,7 +1201,9 @@ def join_match(match_id: str):
     if m.get("rule") == CHECKERS_RULE:
         if str(uid) == str(black_uid):
             return jsonify({"ok": False, "error": {"message": "cannot play against yourself"}}), 400
-        return _checkers_join_handler(db, m, uid, disp, agent_label)
+        return _checkers_join_handler(
+            db, m, uid, disp, agent_label, _optional_hook_from_body(body)
+        )
 
     if uid == black_uid:
         return jsonify({"ok": False, "error": {"message": "cannot play against yourself"}}), 400
@@ -1063,12 +1212,66 @@ def join_match(match_id: str):
         "userId": uid,
         "displayName": disp,
         "agentLabel": agent_label or None,
+        **_optional_hook_from_body(body),
     }
     m["status"] = "running"
     m["nextPlayerUserId"] = black_uid
     m["updatedAtMs"] = now_ms()
     save_db(db)
+    _notify_match_agent_push(m)
     return jsonify({"ok": True, "item": _match_to_public(m)})
+
+
+@sock.route("/api/v1/agent/ws")
+def agent_match_ws(ws: Any) -> None:
+    """
+    A：Agent 出站 WebSocket。查询参数：userId（必填）、matches（逗号分隔 matchId）、
+    token（若服务端设 SQUARE_AGENT_WS_SECRET 则必填）。
+    连接后可发 JSON：{"type":"subscribe","matchIds":["match_xxx",...]}。
+    """
+    uid = (request.args.get("userId") or "").strip()
+    if not uid:
+        ws.close()
+        return
+    secret = (os.environ.get("SQUARE_AGENT_WS_SECRET") or "").strip()
+    if secret and (request.args.get("token") or "").strip() != secret:
+        ws.close()
+        return
+    initial: set[str] = set()
+    for part in (request.args.get("matches") or "").split(","):
+        p = part.strip()
+        if p:
+            initial.add(p)
+
+    client = _WsAgentClient(ws=ws, user_id=uid, match_ids=set(initial))
+    _ws_register(client)
+    try:
+        ws.send(json.dumps({"type": "connected", "userId": uid}, ensure_ascii=False))
+        while True:
+            raw = ws.receive()
+            if raw is None:
+                break
+            try:
+                msg = json.loads(raw)
+            except (TypeError, json.JSONDecodeError):
+                continue
+            if not isinstance(msg, dict):
+                continue
+            if msg.get("type") == "subscribe":
+                mids = msg.get("matchIds") or msg.get("matches") or []
+                if isinstance(mids, str):
+                    mids = [x.strip() for x in mids.split(",") if x.strip()]
+                if isinstance(mids, list):
+                    with _ws_lock:
+                        client.match_ids.update(str(x).strip() for x in mids if str(x).strip())
+            elif msg.get("type") == "unsubscribe":
+                mids = msg.get("matchIds") or []
+                if isinstance(mids, list):
+                    with _ws_lock:
+                        for x in mids:
+                            client.match_ids.discard(str(x).strip())
+    finally:
+        _ws_unregister(client)
 
 
 @app.post("/api/v1/matches/<match_id>/moves")
@@ -1148,6 +1351,7 @@ def play_move(match_id: str):
 
         m["updatedAtMs"] = now_ms()
         save_db(db)
+        _notify_match_agent_push(m)
         pub = _match_to_public(m)
         if _truthy_query("forAgent"):
             pub["agentInput"] = _agent_input_bundle(m, get_client_user_id())
@@ -1211,6 +1415,7 @@ def play_move(match_id: str):
 
     m["updatedAtMs"] = now_ms()
     save_db(db)
+    _notify_match_agent_push(m)
     pub = _match_to_public(m)
     if _truthy_query("forAgent"):
         pub["agentInput"] = _agent_input_bundle(m, get_client_user_id())
