@@ -203,7 +203,7 @@ def _ws_unregister(client: _WsAgentClient) -> None:
             pass
 
 
-def _broadcast_match_ws(match: dict[str, Any]) -> None:
+def _broadcast_match_ws(match: dict[str, Any], *, notify_reason: str | None = None) -> None:
     mid = match.get("id")
     if not mid:
         return
@@ -212,13 +212,15 @@ def _broadcast_match_ws(match: dict[str, Any]) -> None:
     for c in targets:
         try:
             uid = c.user_id
-            payload = {
+            payload: dict[str, Any] = {
                 "type": "match.updated",
                 "event": "match.updated",
                 "matchId": mid,
                 "item": _match_to_public(match),
                 "agentInput": _agent_input_bundle(match, uid),
             }
+            if notify_reason:
+                payload["notifyReason"] = notify_reason
             c.ws.send(json.dumps(payload, ensure_ascii=False))
         except Exception:
             pass
@@ -270,9 +272,9 @@ def _schedule_agent_hook_post(url: str, token: str, payload: dict[str, Any]) -> 
     threading.Thread(target=run, daemon=True).start()
 
 
-def _fire_match_agent_hooks(match: dict[str, Any]) -> None:
+def _fire_match_agent_hooks(match: dict[str, Any], *, notify_reason: str | None = None) -> None:
     for uid, url, tok in _iter_players_with_hooks(match):
-        payload = {
+        payload: dict[str, Any] = {
             "source": "square",
             "type": "match.updated",
             "event": "match.updated",
@@ -281,13 +283,15 @@ def _fire_match_agent_hooks(match: dict[str, Any]) -> None:
             "item": _match_to_public(match),
             "agentInput": _agent_input_bundle(match, uid),
         }
+        if notify_reason:
+            payload["notifyReason"] = notify_reason
         _schedule_agent_hook_post(url, tok, payload)
 
 
-def _notify_match_agent_push(match: dict[str, Any]) -> None:
-    """对局变更后：推 WS（A）并异步 POST agentHookUrl（B）。"""
-    _broadcast_match_ws(match)
-    _fire_match_agent_hooks(match)
+def _notify_match_agent_push(match: dict[str, Any], *, notify_reason: str | None = None) -> None:
+    """对局变更后：推 WS（A）并异步 POST agentHookUrl（B）。notifyReason 便于客户端区分「加入 / 落子」。"""
+    _broadcast_match_ws(match, notify_reason=notify_reason)
+    _fire_match_agent_hooks(match, notify_reason=notify_reason)
 
 
 def _empty_gomoku_board() -> list[list[int]]:
@@ -1178,7 +1182,8 @@ def _checkers_join_handler(
         m["nextPlayerUserId"] = first["userId"]
     m["updatedAtMs"] = now_ms()
     save_db(db)
-    _notify_match_agent_push(m)
+    nr = "match_running" if len(seats_list) >= pc else "seat_joined"
+    _notify_match_agent_push(m, notify_reason=nr)
     return jsonify({"ok": True, "item": _match_to_public(m)})
 
 
@@ -1218,7 +1223,7 @@ def join_match(match_id: str):
     m["nextPlayerUserId"] = black_uid
     m["updatedAtMs"] = now_ms()
     save_db(db)
-    _notify_match_agent_push(m)
+    _notify_match_agent_push(m, notify_reason="opponent_joined")
     return jsonify({"ok": True, "item": _match_to_public(m)})
 
 
@@ -1351,7 +1356,7 @@ def play_move(match_id: str):
 
         m["updatedAtMs"] = now_ms()
         save_db(db)
-        _notify_match_agent_push(m)
+        _notify_match_agent_push(m, notify_reason="move")
         pub = _match_to_public(m)
         if _truthy_query("forAgent"):
             pub["agentInput"] = _agent_input_bundle(m, get_client_user_id())
@@ -1415,7 +1420,7 @@ def play_move(match_id: str):
 
     m["updatedAtMs"] = now_ms()
     save_db(db)
-    _notify_match_agent_push(m)
+    _notify_match_agent_push(m, notify_reason="move")
     pub = _match_to_public(m)
     if _truthy_query("forAgent"):
         pub["agentInput"] = _agent_input_bundle(m, get_client_user_id())

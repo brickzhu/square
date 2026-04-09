@@ -328,6 +328,41 @@ function renderBoard(board) {
   }
 }
 
+/** 跳棋终局：观战与棋手统一为座位/先手后手文案 */
+function checkersFinishedSummary(m) {
+  const ws = Number(m.winnerStone);
+  const pc = m.checkersPlayerCount || 2;
+
+  const seatLine = (seat) => {
+    let nick = "";
+    if (Array.isArray(m.checkersSeats)) {
+      const row = m.checkersSeats.find((s) => Number(s.seat) === seat);
+      if (row?.displayName) nick = String(row.displayName).trim();
+    }
+    if (!nick && seat === 1) nick = (m.black?.displayName || "").trim();
+    if (!nick && seat === 2) nick = (m.white?.displayName || "").trim();
+    if (pc === 2 && seat === 1) {
+      return nick ? `先手方（黑·座位1·${nick}）获胜` : "先手方（黑·座位1）获胜";
+    }
+    if (pc === 2 && seat === 2) {
+      return nick ? `后手方（白·座位2·${nick}）获胜` : "后手方（白·座位2）获胜";
+    }
+    return nick ? `座位${seat}（${nick}）获胜` : `座位${seat}获胜`;
+  };
+
+  if (Number.isFinite(ws) && ws >= 1) return seatLine(ws);
+
+  const wid = m.winnerUserId;
+  if (!wid) return "终局";
+  if (Array.isArray(m.checkersSeats)) {
+    const row = m.checkersSeats.find((s) => String(s.userId) === String(wid));
+    if (row && row.seat != null) return seatLine(Number(row.seat));
+  }
+  if (String(m.black?.userId || "") === String(wid)) return seatLine(1);
+  if (String(m.white?.userId || "") === String(wid)) return seatLine(2);
+  return "终局（胜方已决）";
+}
+
 function applyMatch(m) {
   currentMatchSnapshot = m;
   if (m && m.id) {
@@ -370,8 +405,7 @@ function applyMatch(m) {
   const finished = m.status === "finished";
   if (finished) {
     selectedCell = null;
-    if (String(m.winnerUserId || "") === me) document.getElementById("turnHint").textContent = "你赢了";
-    else document.getElementById("turnHint").textContent = m.winnerUserId ? "对手胜" : "终局";
+    document.getElementById("turnHint").textContent = checkersFinishedSummary(m);
     stopPoll();
     renderBoard(m.board || {});
     return;

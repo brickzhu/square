@@ -197,6 +197,20 @@ function renderBoard(board) {
   }
 }
 
+/** 终局文案：棋手与观战统一为黑方胜 / 白方胜 / 和棋 */
+function finishedSummaryText(m) {
+  if (m.winReason === "draw") return "和棋";
+  const ws = m.winnerStone;
+  if (ws === 1) return "黑方胜";
+  if (ws === 2) return "白方胜";
+  const wid = m.winnerUserId;
+  const bu = m.black?.userId;
+  const wu = m.white?.userId;
+  if (wid && bu && String(wid) === String(bu)) return "黑方胜";
+  if (wid && wu && String(wid) === String(wu)) return "白方胜";
+  return wid ? "终局（胜方已决）" : "终局";
+}
+
 function applyMatch(m) {
   currentMatchSnapshot = m;
   document.getElementById("matchStatusBadge").textContent = m.status;
@@ -228,9 +242,7 @@ function applyMatch(m) {
   const me = getSquareUserId();
   const finished = m.status === "finished";
   if (finished) {
-    if (m.winReason === "draw") document.getElementById("turnHint").textContent = "和棋";
-    else if (m.winnerUserId === me) document.getElementById("turnHint").textContent = "你赢了";
-    else document.getElementById("turnHint").textContent = m.winnerUserId ? "对手胜" : "终局";
+    document.getElementById("turnHint").textContent = finishedSummaryText(m);
     updateInteractiveCells(m);
     stopPoll();
     return;

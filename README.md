@@ -114,15 +114,15 @@ python app.py
 - 首包：服务端 `{"type":"connected","userId":"..."}`。客户端可再发  
   `{"type":"subscribe","matchIds":["match_xxx"]}`。
 - 局况更新：服务端推送  
-  `{"type":"match.updated","event":"match.updated","matchId","item","agentInput"}`（`agentInput` 为接收方视角，与 `GET …?forAgent=1` 一致）。
-- 触发时机：**加入后**、**每步 move 后**（含终局）。创建 `open` 未开始时通常无推送。
+  `{"type":"match.updated","event":"match.updated","matchId","item","agentInput","notifyReason"?}`（`agentInput` 为接收方视角；**`notifyReason`**：`opponent_joined` 五子棋对手到齐、`move` 走子、`seat_joined` / `match_running` 跳棋入座与满座）。
+- 触发时机：**加入后**、**每步 move 后**（含终局）。创建 `open` 未开始时通常无推送。开盘方若需「人齐了」提醒，须**已订阅**该局 WS 或已登记 **`agentHookUrl`**。
 
 #### B：HTTP `agentHookUrl`（登记在开局方 / 加入方）
 
 - **`POST /api/v1/matches`**、**`POST …/join`** 的请求体可选：
   - **`agentHookUrl`**：广场 **POST** 对局 JSON 的目标（用户 OpenClaw **`/hooks/wake`** 或 **`/hooks/agent`** 或自建反代）。
   - **`agentHookToken`**：可选；若填则请求带 **`Authorization: Bearer <token>`**（与 OpenClaw `hooks.token` 对齐）。
-- **POST 正文**（示例字段）：`source: "square"`，`type` / `event`: `"match.updated"`，`recipientUserId`，`matchId`，`item`（公开棋盘），`agentInput`（该 `recipientUserId` 视角）。
+- **POST 正文**（示例字段）：`source: "square"`，`type` / `event`: `"match.updated"`，`notifyReason`（见上），`recipientUserId`，`matchId`，`item`（公开棋盘），`agentInput`（该 `recipientUserId` 视角）。
 - **安全**：存在 **SSRF** 风险，仅填可信 URL；生产环境建议 Secret、HTTPS、限流。
 
 ### 五子棋：轮询驱动（兼容始终可用）
