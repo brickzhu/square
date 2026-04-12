@@ -165,7 +165,28 @@ function ensureBoard() {
   const host = document.getElementById("boardHost");
   if (boardCells) return;
   host.innerHTML = "";
-  const grid = el("div", "gomoku-grid");
+  const board = el("div", "gomoku-board");
+  const lines = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  lines.setAttribute("class", "gomoku-board-lines");
+  lines.setAttribute("viewBox", "0 0 14 14");
+  lines.setAttribute("preserveAspectRatio", "none");
+  lines.setAttribute("aria-hidden", "true");
+  for (let i = 0; i <= 14; i++) {
+    const h = document.createElementNS("http://www.w3.org/2000/svg", "line");
+    h.setAttribute("x1", "0");
+    h.setAttribute("y1", String(i));
+    h.setAttribute("x2", "14");
+    h.setAttribute("y2", String(i));
+    lines.appendChild(h);
+    const v = document.createElementNS("http://www.w3.org/2000/svg", "line");
+    v.setAttribute("x1", String(i));
+    v.setAttribute("y1", "0");
+    v.setAttribute("x2", String(i));
+    v.setAttribute("y2", "14");
+    lines.appendChild(v);
+  }
+  board.appendChild(lines);
+  const grid = el("div", "gomoku-grid gomoku-grid--intersections");
   boardCells = [];
   for (let y = 0; y < 15; y++) {
     const row = [];
@@ -174,14 +195,17 @@ function ensureBoard() {
       cell.type = "button";
       cell.dataset.x = String(x);
       cell.dataset.y = String(y);
-      cell.setAttribute("aria-label", `格子 ${x + 1},${y + 1}`);
+      cell.style.setProperty("--gx", String(x));
+      cell.style.setProperty("--gy", String(y));
+      cell.setAttribute("aria-label", `交点 列 ${x + 1}，行 ${y + 1}`);
       cell.addEventListener("click", () => onCellClick(x, y));
       grid.appendChild(cell);
       row.push(cell);
     }
     boardCells.push(row);
   }
-  host.appendChild(grid);
+  board.appendChild(grid);
+  host.appendChild(board);
 }
 
 function renderBoard(board) {

@@ -977,9 +977,8 @@ body.gomoku-page .plaza-layout.gomoku-layout {
   body.gomoku-page .gomoku-panel .checkers-board-wrap {
     max-width: 100%;
   }
-  body.gomoku-page .gomoku-grid {
-    gap: 1px;
-    padding: 5px;
+  body.gomoku-page .gomoku-board {
+    max-width: 100%;
   }
   body.gomoku-page .gomoku-open-row {
     flex-direction: column;
@@ -1078,31 +1077,68 @@ body.gomoku-page .plaza-layout.gomoku-layout {
     }
   }
 }
-.gomoku-grid {
-  display: grid;
-  grid-template-columns: repeat(15, 1fr);
-  gap: 2px;
-  padding: 8px;
-  background: var(--line);
+/* 五子棋：线格交点落子、圆形棋子；配色与改版前方格棋盘一致 */
+.gomoku-board {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 1;
+  margin: 0 auto;
   border-radius: 10px;
   border: 3px solid var(--line);
+  background: #8b7d6e;
+  container-type: inline-size;
+  container-name: gomoku-board;
+}
+.gomoku-board-lines {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  pointer-events: none;
+  z-index: 0;
+  border-radius: 7px;
+  color: var(--line);
+}
+.gomoku-board-lines line {
+  stroke: currentColor;
+  stroke-width: 0.09;
+}
+.gomoku-grid--intersections {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
 }
 .gomoku-cell {
+  position: absolute;
+  left: calc(var(--gx) * 100% / 14);
+  top: calc(var(--gy) * 100% / 14);
+  transform: translate(-50%, -50%);
+  /* 相邻交点间距约 100%/14≈7.14%，棋子直径须明显小于此才不会挤成一团 */
+  width: min(5.5cqw, 5.9%);
   aspect-ratio: 1;
+  height: auto;
   min-width: 0;
+  min-height: 0;
   padding: 0;
   border: none;
-  border-radius: 4px;
-  background: #8b7d6e;
+  border-radius: 50%;
+  background: transparent;
   cursor: pointer;
-  transition: filter 0.1s ease;
+  transition: background 0.12s ease, box-shadow 0.12s ease, filter 0.12s ease;
 }
-.gomoku-cell:hover {
+.gomoku-cell:not(.gomoku-cell--black):not(.gomoku-cell--white):hover:not(:disabled):not(
+    .gomoku-cell--no-play
+  ) {
+  filter: brightness(1.08);
+}
+.gomoku-cell--black:hover:not(:disabled),
+.gomoku-cell--white:hover:not(:disabled) {
   filter: brightness(1.08);
 }
 .gomoku-cell--no-play {
   cursor: not-allowed;
-  opacity: 0.72;
+  opacity: 0.85;
 }
 .gomoku-cell:disabled {
   cursor: not-allowed;
@@ -1114,6 +1150,11 @@ body.gomoku-page .plaza-layout.gomoku-layout {
 .gomoku-cell--white {
   background: radial-gradient(circle at 35% 35%, #ffffff, #d8d0c8 55%);
   box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.25);
+}
+@supports not (width: 1cqw) {
+  .gomoku-cell {
+    width: 5.9%;
+  }
 }
 .gomoku-open-list {
   display: flex;
