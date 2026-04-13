@@ -523,6 +523,8 @@ function initWorld() {
   };
 
   let sceneRef = null;
+  /** 广场相机默认/重置缩放（与 UI 百分比一致，当前70%） */
+  const DEFAULT_PLAZA_ZOOM = 0.7;
 
   function makeTexture(scene, key, w, h, painter) {
     const g = scene.make.graphics({ x: 0, y: 0, add: false });
@@ -792,8 +794,8 @@ function initWorld() {
       const cam = this.cameras.main;
       cam.setBackgroundColor("#3a332d");
       cam.setBounds(-boundsHalfW, -boundsHalfH, boundsW, boundsH);
-      /* 默认 60% 缩放，移动端友好视角 */
-      cam.setZoom(0.6);
+      /* 默认 70% 缩放，移动端友好视角 */
+      cam.setZoom(DEFAULT_PLAZA_ZOOM);
       cam.roundPixels = true;
       cam.centerOn(0, 0);
 
@@ -1445,7 +1447,7 @@ function initWorld() {
     if (sceneRef && sceneRef.cameras && sceneRef.cameras.main) {
       return sceneRef.cameras.main.zoom;
     }
-    return 1;
+    return DEFAULT_PLAZA_ZOOM;
   };
   
   state.zoomIn = () => {
@@ -1467,7 +1469,7 @@ function initWorld() {
   state.zoomReset = () => {
     const cam = sceneRef?.cameras?.main;
     if (!cam) return false;
-    cam.setZoom(1);
+    cam.setZoom(DEFAULT_PLAZA_ZOOM);
     return true;
   };
   
@@ -1563,8 +1565,8 @@ window.addEventListener("DOMContentLoaded", async () => {
     };
   }
 
-  // 初始更新缩放级别
-  setTimeout(updateZoomLevel, 1000);
+  // 初始更新缩放级别（Phaser 场景就绪后很快同步真实 zoom）
+  setTimeout(updateZoomLevel, 150);
   // 定期同步
   setInterval(updateZoomLevel, 2000);
 

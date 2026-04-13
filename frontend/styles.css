@@ -261,9 +261,9 @@ body::before {
 
 #zoomLevel {
   font-family: var(--pixel);
-  font-size: 8px;
-  color: var(--gh-mustard);
-  min-width: 36px;
+  font-size: 10px;
+  color: var(--line);
+  min-width: 44px;
   text-align: center;
 }
 .world__actions-hint {
