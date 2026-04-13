@@ -87,6 +87,17 @@ def get_client_user_id() -> str:
     return "anon"
 
 
+def _require_square_admin():
+    """若未配置口令或校验失败，返回 Flask 响应元组；通过则返回 None。"""
+    token = (os.environ.get("SQUARE_ADMIN_TOKEN") or "").strip()
+    if not token:
+        return jsonify({"ok": False, "error": {"message": "SQUARE_ADMIN_TOKEN not configured"}}), 503
+    auth = (request.headers.get("Authorization") or "").strip()
+    if auth != f"Bearer {token}":
+        return jsonify({"ok": False, "error": {"message": "forbidden"}}), 403
+    return None
+
+
 def sanitize_text(s: str, *, max_len: int = 200) -> str:
     s = (s or "").strip()
     if len(s) > max_len:
@@ -967,6 +978,20 @@ def clear_demo_posts():
 
     save_db(db)
     return jsonify({"ok": True, "removed": removed_posts, "removedMatches": removed_matches})
+
+
+@app.post("/api/v1/admin/clear-matches")
+def admin_clear_matches():
+    """清空全部对局（含非示例局）。须在环境中配置 SQUARE_ADMIN_TOKEN，并带 Authorization: Bearer。"""
+    deny = _require_square_admin()
+    if deny:
+        return deny
+    db = load_db()
+    matches: list[dict[str, Any]] = list(db.get("matches", []))
+    removed = len(matches)
+    db["matches"] = []
+    save_db(db)
+    return jsonify({"ok": True, "removed": removed})
 
 
 @app.delete("/api/v1/posts/<post_id>")
