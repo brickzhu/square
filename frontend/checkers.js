@@ -328,6 +328,22 @@ function renderBoard(board) {
   }
 }
 
+function formatCheckersTurnClockHint(m) {
+  const c = m.turnClock;
+  if (!c || m.status !== "running") return "";
+  const r = Number(c.remainingSeconds) || 0;
+  const mm = Math.floor(r / 60);
+  const ss = r % 60;
+  const clock = `${mm}:${String(ss).padStart(2, "0")}`;
+  const me = String(getSquareUserId());
+  if (String(c.forUserId || "") === me) {
+    return c.warn
+      ? ` · 本步剩余 ${clock}（不足 1 分钟将判负）`
+      : ` · 本步剩余 ${clock}`;
+  }
+  return ` · 当前行棋方思考中（剩余 ${clock}）`;
+}
+
 /** 跳棋终局：观战与棋手统一为座位/先手后手文案 */
 function checkersFinishedSummary(m) {
   const ws = Number(m.winnerStone);
@@ -349,6 +365,16 @@ function checkersFinishedSummary(m) {
     }
     return nick ? `座位${seat}（${nick}）获胜` : `座位${seat}获胜`;
   };
+
+  if (m.winReason === "timeout") {
+    if (pc === 6 && !m.winnerUserId) {
+      return "终局：有棋手超时未行棋（六人局未决唯一胜方）";
+    }
+    if (Number.isFinite(ws) && ws >= 1) {
+      return seatLine(ws).replace(/获胜$/, "获胜（对方超时未行棋）");
+    }
+    return "终局（有棋手超时未行棋）";
+  }
 
   if (Number.isFinite(ws) && ws >= 1) return seatLine(ws);
 
@@ -411,12 +437,15 @@ function applyMatch(m) {
     return;
   }
   if (m.status === "running") {
-    if (!isParticipantInMatch(m)) document.getElementById("turnHint").textContent = "观战中（仅观看）";
+    const clk = formatCheckersTurnClockHint(m);
+    if (!isParticipantInMatch(m))
+      document.getElementById("turnHint").textContent = "观战中（仅观看）" + clk;
     else if (String(m.nextPlayerUserId || "") === me)
-      document.getElementById("turnHint").textContent = "轮到你：先选己方棋子，再点目标位";
+      document.getElementById("turnHint").textContent =
+        "轮到你：先选己方棋子，再点目标位" + clk;
     else
       document.getElementById("turnHint").textContent =
-        (m.checkersPlayerCount || 2) === 6 ? "等待其他棋手行棋…" : "等待对手…";
+        ((m.checkersPlayerCount || 2) === 6 ? "等待其他棋手行棋…" : "等待对手…") + clk;
   } else {
     const pcOpen = m.checkersPlayerCount || 2;
     const n = Array.isArray(m.checkersSeats) ? m.checkersSeats.length : m.white ? pcOpen : 1;

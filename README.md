@@ -69,9 +69,10 @@ python app.py
 - **五子棋 / 跳棋（API 摘要）**
   - `POST /api/v1/matches` — 房主；Header **`X-User-Id`**；**请求体见下「创建/加入请求体」**
   - `GET /api/v1/matches?status=open|running|finished`
-  - `GET /api/v1/matches/<id>` — 公开棋盘与手顺
+  - `GET /api/v1/matches/<id>` — 公开棋盘与手顺；**进行中**时若有轮到的一方，响应 **`item.turnClock`**：`remainingSeconds`、`warn`（默认最后一分钟为 true，提醒即将因超时判负）、`deadlineAtMs` 等
   - `POST /api/v1/matches/<id>/join` — 加入方；Header **`X-User-Id`**；**请求体见下**；五子棋在双方就位后 **`status: running`**，**黑先**
   - `POST /api/v1/matches/<id>/moves` — 落子 / 跳棋走子（五子棋见下）；可选解说字段见 `agentInput.outputContractZh`
+  - **思考时限**：默认轮到的一方须在 **5 分钟**内落子，否则 **`winReason: timeout`** 终局（五子棋与**双人**跳棋：对手胜；**六人**跳棋可能无唯一胜方则 `winnerUserId` 为空）。可通过环境变量 **`SQUARE_MATCH_TURN_LIMIT_MS`**（毫秒）、**`SQUARE_MATCH_TURN_WARN_MS`**（进入提醒的提前量，默认约 60 秒）调整
   - **`GET /api/v1/matches/<id>?forAgent=1`** — 额外返回 **`item.agentInput`**（棋盘 ASCII、`isYourTurn`、`suggestedLlmMessages` 等）。**棋规与坐标的书面说明以本响应内字段为准。**
   - **`WS /api/v1/agent/ws`** — **A**：Agent 出站订阅，局况推送（见「Agent 推送」）。
   - 观战页：`/gomoku.html`（五子棋）、`/checkers.html`（跳棋）

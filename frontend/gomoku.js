@@ -221,8 +221,30 @@ function renderBoard(board) {
   }
 }
 
+function formatTurnClockHint(m) {
+  const c = m.turnClock;
+  if (!c || m.status !== "running") return "";
+  const r = Number(c.remainingSeconds) || 0;
+  const mm = Math.floor(r / 60);
+  const ss = r % 60;
+  const clock = `${mm}:${String(ss).padStart(2, "0")}`;
+  const me = getSquareUserId();
+  if (String(c.forUserId || "") === String(me)) {
+    return c.warn
+      ? ` · 本步剩余 ${clock}（不足1 分钟将判负）`
+      : ` · 本步剩余 ${clock}`;
+  }
+  return ` · 对方思考中（剩余 ${clock}）`;
+}
+
 /** 终局文案：棋手与观战统一为黑方胜 / 白方胜 / 和棋 */
 function finishedSummaryText(m) {
+  if (m.winReason === "timeout") {
+    const ws = m.winnerStone;
+    if (ws === 1) return "黑方胜（对方超时未行棋）";
+    if (ws === 2) return "白方胜（对方超时未行棋）";
+    return "终局（有棋手超时未行棋）";
+  }
   if (m.winReason === "draw") return "和棋";
   const ws = m.winnerStone;
   if (ws === 1) return "黑方胜";
@@ -273,11 +295,14 @@ function applyMatch(m) {
   }
   if (m.status === "running") {
     if (!isParticipantInMatch(m)) {
-      document.getElementById("turnHint").textContent = "观战中（仅观看）";
+      document.getElementById("turnHint").textContent =
+        "观战中（仅观看）" + formatTurnClockHint(m);
     } else if (m.nextPlayerUserId === me) {
-      document.getElementById("turnHint").textContent = "轮到你下（点击棋盘）";
+      document.getElementById("turnHint").textContent =
+        "轮到你下（点击棋盘）" + formatTurnClockHint(m);
     } else {
-      document.getElementById("turnHint").textContent = "等待对手…";
+      document.getElementById("turnHint").textContent =
+        "等待对手…" + formatTurnClockHint(m);
     }
   } else {
     document.getElementById("turnHint").textContent = "等待对手加入本场";

@@ -55,6 +55,11 @@ def now_ms() -> int:
     return int(time.time() * 1000)
 
 
+# 轮到行棋方须在 limit 内出手，否则判负（五子棋/双人跳棋：对手胜；六人跳棋无唯一对手时不指定胜方）
+MATCH_TURN_LIMIT_MS = int(os.environ.get("SQUARE_MATCH_TURN_LIMIT_MS", str(5 * 60 * 1000)))
+MATCH_TURN_WARN_MS = int(os.environ.get("SQUARE_MATCH_TURN_WARN_MS", str(60 * 1000)))
+
+
 def load_db() -> dict[str, Any]:
     defaults: dict[str, Any] = {"posts": [], "comments": [], "likes": [], "bans": [], "matches": []}
     if not DB_PATH.exists():
@@ -552,6 +557,96 @@ def _other_user_in_match(match: dict[str, Any], uid: str) -> str | None:
     return None
 
 
+def _turn_timeout_winner_uid(match: dict[str, Any], loser_uid: str) -> str | None:
+    if match.get("rule") == CHECKERS_RULE:
+        pc = _checkers_player_count(match)
+        if pc == 2:
+            for s in _get_checkers_seats(match):
+                if str(s.get("userId")) != str(loser_uid):
+                    return str(s.get("userId"))
+        return None
+    return _other_user_in_match(match, loser_uid)
+
+
+def _ensure_turn_started_clock(match: dict[str, Any]) -> bool:
+    """缺少 turnStartedAtMs 时用 updatedAtMs 回填。返回是否修改了 match（须落盘）。"""
+    if match.get("status") != "running" or not match.get("nextPlayerUserId"):
+        if match.get("turnStartedAtMs") is not None:
+            match["turnStartedAtMs"] = None
+            return True
+        return False
+    if match.get("turnStartedAtMs") is not None:
+        return False
+    base = int(match.get("updatedAtMs") or match.get("createdAtMs") or now_ms())
+    match["turnStartedAtMs"] = base
+    return True
+
+
+def _try_finish_turn_timeout(match: dict[str, Any], now: int) -> bool:
+    """当前轮到的一方若已超过思考时限则终局。返回是否刚进入 finished。"""
+    if match.get("status") != "running":
+        return False
+    nxt = match.get("nextPlayerUserId")
+    if not nxt:
+        return False
+    started = match.get("turnStartedAtMs")
+    if started is None:
+        return False
+    started_i = int(started)
+    if now < started_i + MATCH_TURN_LIMIT_MS:
+        return False
+    loser = str(nxt)
+    winner = _turn_timeout_winner_uid(match, loser)
+    match["status"] = "finished"
+    match["nextPlayerUserId"] = None
+    match["winReason"] = "timeout"
+    match["winnerUserId"] = winner
+    match["turnStartedAtMs"] = None
+    if match.get("rule") == CHECKERS_RULE:
+        if winner:
+            match["winnerStone"] = _stone_for_user(match, winner)
+        else:
+            match["winnerStone"] = None
+    else:
+        match["winnerStone"] = _stone_for_user(match, winner) if winner else None
+    match["updatedAtMs"] = now
+    return True
+
+
+def _sync_one_match_turn(db: dict[str, Any], m: dict[str, Any], now: int) -> str | None:
+    """同步轮钟：必要时回填 started；超时则终局。返回 'timeout' | 'migrated' | None。"""
+    migrated = _ensure_turn_started_clock(m)
+    if _try_finish_turn_timeout(m, now):
+        return "timeout"
+    if migrated:
+        return "migrated"
+    return None
+
+
+def _public_turn_clock(match: dict[str, Any], now: int | None = None) -> dict[str, Any] | None:
+    if match.get("status") != "running" or not match.get("nextPlayerUserId"):
+        return None
+    t = now if now is not None else now_ms()
+    started = match.get("turnStartedAtMs")
+    if started is None:
+        started = int(match.get("updatedAtMs") or match.get("createdAtMs") or t)
+    started_i = int(started)
+    deadline = started_i + MATCH_TURN_LIMIT_MS
+    rem = max(0, deadline - t)
+    elapsed = t - started_i
+    warn_threshold = max(0, MATCH_TURN_LIMIT_MS - MATCH_TURN_WARN_MS)
+    return {
+        "forUserId": match["nextPlayerUserId"],
+        "startedAtMs": started_i,
+        "deadlineAtMs": deadline,
+        "limitMs": MATCH_TURN_LIMIT_MS,
+        "warnAfterMs": warn_threshold,
+        "remainingMs": rem,
+        "remainingSeconds": int(rem // 1000),
+        "warn": elapsed >= warn_threshold and rem > 0,
+    }
+
+
 def _match_to_public(match: dict[str, Any]) -> dict[str, Any]:
     """对外状态（棋盘真相）。"""
     pub: dict[str, Any] = {
@@ -578,6 +673,9 @@ def _match_to_public(match: dict[str, Any]) -> dict[str, Any]:
         pub["checkersPlayerCount"] = pc
         pub["checkersSeats"] = [_public_seat(s) for s in _get_checkers_seats(match)]
         pub["checkersCampKeys"] = _checkers_camp_keys_by_seat(match)
+    tc = _public_turn_clock(match)
+    if tc:
+        pub["turnClock"] = tc
     return pub
 
 
@@ -642,6 +740,14 @@ def _agent_input_bundle_checkers(match: dict[str, Any], viewer_uid: str) -> dict
         'If your turn: POST {"path":[[q,r],[q,r],...]}. If not: {"pass":true}.'
     )
     suggested_system_zh = f"你是中国跳棋 Agent（本局 {pc} 人）。轮到谁见 isYourTurn。" + output_contract_zh
+    tc_ck = _public_turn_clock(match)
+    tc_line_ck = ""
+    if tc_ck:
+        tc_line_ck = (
+            f"行棋时限：nextPlayerUserId 须在约 {MATCH_TURN_LIMIT_MS // 60000} 分钟内落子；"
+            f"剩余约 {tc_ck['remainingSeconds']} 秒，warn={tc_ck['warn']} 表示已进入最后约 {MATCH_TURN_WARN_MS // 1000} 秒提醒。"
+            "逾时未行棋则判负（双人局对手胜；六人局可能无唯一胜方）。"
+        )
     suggested_user_zh = "\n\n".join(
         [
             f"matchId={match['id']} rule={CHECKERS_RULE} status={match.get('status')}",
@@ -651,6 +757,7 @@ def _agent_input_bundle_checkers(match: dict[str, Any], viewer_uid: str) -> dict
             board_ascii,
             "moveHistory:\n" + history_text,
             "nextPlayerUserId=" + str(match.get("nextPlayerUserId")),
+            tc_line_ck or "(无轮钟：未进行中或未定下一手方)",
         ]
     )
     return {
@@ -664,6 +771,7 @@ def _agent_input_bundle_checkers(match: dict[str, Any], viewer_uid: str) -> dict
         "black": _public_player(match.get("black")),
         "white": _public_player(match.get("white")),
         "nextPlayerUserId": match.get("nextPlayerUserId"),
+        "turnClock": tc_ck,
         "board": board,
         "boardAscii": board_ascii,
         "boardAsciiLegendZh": board_ascii_note,
@@ -734,6 +842,14 @@ def _agent_input_bundle(match: dict[str, Any], viewer_uid: str) -> dict[str, Any
         "你是五子棋引擎连接件。规则：15×15，黑先，任意方向连五胜。"
         + output_contract_zh
     )
+    tc_g = _public_turn_clock(match)
+    tc_line_g = ""
+    if tc_g:
+        tc_line_g = (
+            f"行棋时限：nextPlayerUserId 须在约 {MATCH_TURN_LIMIT_MS // 60000} 分钟内落子；"
+            f"剩余约 {tc_g['remainingSeconds']} 秒，warn={tc_g['warn']} 表示已进入最后约 {MATCH_TURN_WARN_MS // 1000} 秒提醒。"
+            "逾时未行棋则判负（对手胜）。"
+        )
     suggested_user_zh = "\n\n".join(
         [
             f"matchId={match['id']} status={match.get('status')}",
@@ -742,6 +858,7 @@ def _agent_input_bundle(match: dict[str, Any], viewer_uid: str) -> dict[str, Any
             board_ascii,
             "moveHistory:\n" + history_text,
             "nextPlayerUserId=" + str(match.get("nextPlayerUserId")),
+            tc_line_g or "(无轮钟：未进行中或未定下一手方)",
         ]
     )
 
@@ -755,6 +872,7 @@ def _agent_input_bundle(match: dict[str, Any], viewer_uid: str) -> dict[str, Any
         "black": _public_player(match.get("black")),
         "white": _public_player(match.get("white")),
         "nextPlayerUserId": match.get("nextPlayerUserId"),
+        "turnClock": tc_g,
         "board": board,
         "boardAscii": board_ascii,
         "boardAsciiLegendZh": board_ascii_note,
@@ -1134,6 +1252,16 @@ def list_matches():
     db = load_db()
     status_f = request.args.get("status")
     items = list(db.get("matches", []))
+    t = now_ms()
+    dirty = False
+    for m in items:
+        r = _sync_one_match_turn(db, m, t)
+        if r:
+            dirty = True
+            if r == "timeout":
+                _notify_match_agent_push(m, notify_reason="timeout")
+    if dirty:
+        save_db(db)
     items.sort(key=lambda m: int(m.get("updatedAtMs", 0)), reverse=True)
     if status_f in ("open", "running", "finished"):
         items = [m for m in items if m.get("status") == status_f]
@@ -1151,6 +1279,12 @@ def get_match(match_id: str):
     m = _find_match(db, match_id)
     if not m:
         return jsonify({"ok": False, "error": {"message": "not found"}}), 404
+    t = now_ms()
+    r = _sync_one_match_turn(db, m, t)
+    if r:
+        save_db(db)
+        if r == "timeout":
+            _notify_match_agent_push(m, notify_reason="timeout")
     pub = _match_to_public(m)
     if _truthy_query("forAgent"):
         uid = get_client_user_id()
@@ -1205,6 +1339,7 @@ def _checkers_join_handler(
         m["status"] = "running"
         first = min(seats_list, key=lambda s: int(s["seat"]))
         m["nextPlayerUserId"] = first["userId"]
+        m["turnStartedAtMs"] = now_ms()
     m["updatedAtMs"] = now_ms()
     save_db(db)
     nr = "match_running" if len(seats_list) >= pc else "seat_joined"
@@ -1246,6 +1381,7 @@ def join_match(match_id: str):
     }
     m["status"] = "running"
     m["nextPlayerUserId"] = black_uid
+    m["turnStartedAtMs"] = now_ms()
     m["updatedAtMs"] = now_ms()
     save_db(db)
     _notify_match_agent_push(m, notify_reason="opponent_joined")
@@ -1310,6 +1446,12 @@ def play_move(match_id: str):
     m = _find_match(db, match_id)
     if not m:
         return jsonify({"ok": False, "error": {"message": "not found"}}), 404
+    t0 = now_ms()
+    r0 = _sync_one_match_turn(db, m, t0)
+    if r0:
+        save_db(db)
+        if r0 == "timeout":
+            _notify_match_agent_push(m, notify_reason="timeout")
     if m.get("status") != "running":
         current_app.logger.warning("gomoku move rejected: match not running match=%s", match_id)
         return jsonify({"ok": False, "error": {"message": "match not running"}}), 400
@@ -1374,10 +1516,12 @@ def play_move(match_id: str):
             m["winnerStone"] = wst
             m["winReason"] = "checkers_home"
             m["nextPlayerUserId"] = None
+            m["turnStartedAtMs"] = None
             m["winnerUserId"] = _checkers_winner_user_id(m, wst)
         else:
             nxt = _next_checkers_turn_uid(m, uid)
             m["nextPlayerUserId"] = nxt
+            m["turnStartedAtMs"] = now_ms()
 
         m["updatedAtMs"] = now_ms()
         save_db(db)
@@ -1433,15 +1577,18 @@ def play_move(match_id: str):
         m["winnerStone"] = stone
         m["winReason"] = "five"
         m["nextPlayerUserId"] = None
+        m["turnStartedAtMs"] = None
     elif _board_is_full(board):
         m["status"] = "finished"
         m["winnerUserId"] = None
         m["winnerStone"] = 0
         m["winReason"] = "draw"
         m["nextPlayerUserId"] = None
+        m["turnStartedAtMs"] = None
     else:
         other = _other_user_in_match(m, uid)
         m["nextPlayerUserId"] = other
+        m["turnStartedAtMs"] = now_ms()
 
     m["updatedAtMs"] = now_ms()
     save_db(db)
