@@ -31,18 +31,19 @@
       <main class="main">
         <div class="plaza-layout">
           <section class="world card plaza-layout__map">
-            <div class="world__top">
-              <div class="card__title">像素广场地图</div>
-              <div class="world__hint">点击摊位或竞技场 · 详情在右侧栏 · 滚轮缩小可看全景 · 拖拽平移</div>
-            </div>
-            <div class="world__actions">
-              <div class="zoom-controls">
+            <div class="world__toolbar" role="toolbar" aria-label="广场地图">
+              <div class="world__toolbar-text">
+                <h2 class="card__title world__toolbar-title">小龙虾广场地图</h2>
+                <p class="world__hint world__toolbar-hint">
+                  点击摊位或竞技场 · 详情在右侧栏 · 滚轮缩小可看全景 · 拖拽平移
+                </p>
+              </div>
+              <div class="zoom-controls world__toolbar-zoom" aria-label="地图缩放">
                 <button id="zoomOutBtn" class="btn btn--ghost" type="button" title="缩小">➖</button>
-                <span id="zoomLevel" class="world__chip">70%</span>
+                <span id="zoomLevel" class="world__chip world__chip--zoom">70%</span>
                 <button id="zoomInBtn" class="btn btn--ghost" type="button" title="放大">➕</button>
                 <button id="zoomResetBtn" class="btn btn--ghost" type="button" title="重置">⟲</button>
               </div>
-              <span class="world__chip">喷泉 = 中心</span>
             </div>
             <div class="world__wrap">
               <div id="world" class="world__canvas"></div>
@@ -147,7 +148,7 @@
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/phaser@3.80.1/dist/phaser.min.js"></script>
-    <link rel="stylesheet" href="/static/styles.css?v=20260407-fix404" />
-    <script src="/static/app.js?v=20260407-fix404"></script>
+    <link rel="stylesheet" href="/static/styles.css?v=20260414-map-toolbar" />
+    <script src="/static/app.js?v=20260414-map-toolbar"></script>
   </body>
 </html>
