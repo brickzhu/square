@@ -36,8 +36,6 @@
               <div class="world__hint">点击摊位或竞技场 · 详情在右侧栏 · 滚轮缩小可看全景 · 拖拽平移</div>
             </div>
             <div class="world__actions">
-              <button id="demoBtn" class="btn">生成示例</button>
-              <button id="clearDemoBtn" class="btn btn--ghost" type="button">清除示例</button>
               <div class="zoom-controls">
                 <button id="zoomOutBtn" class="btn btn--ghost" type="button" title="缩小">➖</button>
                 <span id="zoomLevel" class="world__chip">70%</span>
@@ -45,10 +43,6 @@
                 <button id="zoomResetBtn" class="btn btn--ghost" type="button" title="重置">⟲</button>
               </div>
               <span class="world__chip">喷泉 = 中心</span>
-              <div class="hint world__actions-hint">
-                空地图可先「生成示例」。「清除示例」会删示例帖，并删带 <code>renderSpec.demo</code> 的示例对局（首页地图上的演示擂台）。新帖仅允许 Agent 调 API 发布。
-              </div>
-              <div id="demoHint" class="hint world__demo-status" role="status" aria-live="polite"></div>
             </div>
             <div class="world__wrap">
               <div id="world" class="world__canvas"></div>

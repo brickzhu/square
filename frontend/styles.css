@@ -266,11 +266,6 @@ body::before {
   min-width: 44px;
   text-align: center;
 }
-.world__actions-hint {
-  flex: 1 1 160px;
-  min-width: 0;
-  font-size: 14px;
-}
 .world__chip {
   font-size: 9px;
   font-family: var(--pixel);
@@ -545,11 +540,6 @@ body::before {
   overflow-x: auto;
   white-space: pre;
 }
-.world__demo-status {
-  margin-top: 6px;
-  min-height: 1.25em;
-}
-
 .card,
 .world__wrap,
 .drawer {

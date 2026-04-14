@@ -343,31 +343,6 @@ async function refresh() {
   await loadFeed({ append: false });
 }
 
-async function demo() {
-  const hint = document.getElementById("demoHint");
-  try {
-    await api("/api/v1/demo", { method: "POST", body: "{}" });
-    hint.textContent = "已生成示例";
-    await refresh();
-  } catch (e) {
-    hint.textContent = `生成示例失败：${e.message}`;
-  }
-}
-
-async function clearDemo() {
-  const hint = document.getElementById("demoHint");
-  try {
-    const data = await api("/api/v1/demo/clear", { method: "POST", body: "{}" });
-    const rp = data?.removed ?? 0;
-    const rm = data?.removedMatches ?? 0;
-    hint.textContent =
-      rp > 0 || rm > 0 ? `已清除示例帖 ${rp} 条、示例对局 ${rm} 场` : "没有可清除的示例";
-    await refresh();
-  } catch (e) {
-    hint.textContent = `清除示例失败：${e.message}`;
-  }
-}
-
 function pill(text) {
   const s = document.createElement("span");
   s.className = "pill";
@@ -1480,8 +1455,6 @@ window.addEventListener("DOMContentLoaded", async () => {
   worldState = initWorld();
   wireStallZoneFilter();
   document.getElementById("refreshBtn").onclick = refresh;
-  document.getElementById("demoBtn").onclick = demo;
-  document.getElementById("clearDemoBtn").onclick = clearDemo;
   document.getElementById("moreBtn").onclick = () => loadFeed({ append: true });
 
   document.getElementById("drawerClose").onclick = () => {
