@@ -1383,19 +1383,40 @@ body.gomoku-page .plaza-layout.gomoku-layout {
     font-size: 14px;
   }
   
-  /* 地图工具条：窄屏略紧凑，左段标题与说明仍同一行内对齐 */
+  /* 地图工具条：手机端自动换行，说明可多行展示 */
   .world__toolbar {
-    padding: 8px 10px;
-    gap: 8px 10px;
+    flex-wrap: wrap;
+    align-items: stretch;
+    padding: 10px 12px;
+    gap: 10px 12px;
+    row-gap: 12px;
   }
   .world__toolbar-text {
-    gap: 8px 12px;
-  }
-  .world__toolbar-hint {
-    font-size: 12px;
+    flex: 1 1 100%;
+    min-width: 0;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 6px;
   }
   .world__toolbar-title {
-    font-size: 8px;
+    font-size: 9px;
+    line-height: 1.4;
+  }
+  .world__toolbar-hint {
+    width: 100%;
+    font-size: 12px;
+    line-height: 1.45;
+    white-space: normal;
+    overflow: visible;
+    text-overflow: unset;
+  }
+  .world__toolbar-zoom {
+    flex: 1 1 100%;
+    display: flex;
+    justify-content: center;
+  }
+  .world__toolbar-zoom .zoom-controls {
+    max-width: 100%;
   }
 
   /* 地图区域高度调整 */
