@@ -499,7 +499,48 @@ function initWorld() {
 
   let sceneRef = null;
   /** 广场相机默认/重置缩放（与 UI 百分比一致，当前70%） */
-  const DEFAULT_PLAZA_ZOOM = 0.7;
+  /** 广场地图默认缩放（广场放大后略调小以便一屏看到更多） */
+  /** 略小于 0.7，与 PS≈1.5 的铺砖区匹配一屏可视范围 */
+  const DEFAULT_PLAZA_ZOOM = 0.58;
+  /** 动物进入分区水池后，在此时间内留在水中，期满才被推到岸上 */
+  const PLAZA_POOL_ESCAPE_MS = 5000;
+  /** 四分区景观水池面积相对原设计的倍数（线尺度 = √面积倍数） */
+  const PLAZA_ZONE_POOL_AREA_MULT = 1.5;
+  const PLAZA_ZONE_POOL_LINEAR_SCALE = Math.sqrt(PLAZA_ZONE_POOL_AREA_MULT);
+  const MAX_LIZARDS = 7;
+  /** 地图上可同时存在的蜥蜴蛋上限（需 ≥ 每窝颗数） */
+  const MAX_LIZARD_EGGS_WORLD = 20;
+  /** 单次产卵颗数 */
+  const LIZARD_EGGS_PER_LAY = 5;
+  const LIZARD_EGG_HATCH_MS = 10_000;
+  const LIZARD_EGG_DOUBLE_HATCH_CHANCE = 0.13;
+  const EGG_EAT_DIST = 11;
+  const MOUSE_SNAKE_EGG_EAT_COOLDOWN_MS = 300_000;
+  const SNAKE_EAT_LIZARD_COOLDOWN_MS = 1400;
+  /** 牛蛙：游荡上岸距岸 5–10px；离水池边界最外不得超过 10px（含追猎） */
+  const FROG_SHORE_OUT_MIN = 5;
+  const FROG_SHORE_OUT_MAX = 10;
+  /** 分区水池内鱼：每池上限、起始数量、繁殖与猫捕鱼周期 */
+  const MAX_FISH_PER_POOL = 5;
+  const POND_FISH_START = 3;
+  const FISH_BREED_DIST = 14;
+  const FISH_EGG_HATCH_MS = 10_000;
+  const FISH_BREED_COOLDOWN_MS = 8000;
+  const FISH_SWIM_SPEED = 16;
+  const FISH_MATURE_MS = 14_000;
+  const CAT_FISH_INTERVAL_MS = 120_000;
+  const POND_FISH_TINTS = [
+    0xff6b6b, 0xffd93d, 0x6bcb77, 0x4d96ff, 0xc56cf0, 0xff922b, 0x95e1d3, 0xf38ba8, 0xe63946, 0x2a9d8f,
+  ];
+  /** 鼠/蟑钻井盖：入口半径、冷却；遇险时优先跑向最近井盖 */
+  const MANHOLE_ENTRY_RADIUS = 14;
+  const MANHOLE_COOLDOWN_MS = 3200;
+  const MOUSE_MANHOLE_PANIC_CAT = 58;
+  const MOUSE_MANHOLE_PANIC_SNAKE = 102;
+  const MOUSE_MANHOLE_PANIC_FROG = 96;
+  const ROACH_MANHOLE_PANIC_LIZARD = 54;
+  const ROACH_MANHOLE_PANIC_SNAKE = 50;
+  const ROACH_MANHOLE_PANIC_FROG = 92;
 
   function makeTexture(scene, key, w, h, painter) {
     const g = scene.make.graphics({ x: 0, y: 0, add: false });
@@ -569,6 +610,8 @@ function initWorld() {
       this.roaches = [];
       this.roachBreedLock = 0;
       this.snakes = [];
+      /** 牛蛙：活动在水池内/旁；捕食除猫、蛇外的动物 */
+      this.frogs = [];
       this.catChaseMouse = null;
       this.mouseBreedLock = 0;
       /** 老鼠随机游荡的轴对齐范围（与相机大地砖边界一致，留边避免贴边） */
@@ -577,6 +620,8 @@ function initWorld() {
       this.boothNpcs = [];
       /** 中心喷泉 (0,0) 贴图约 40px；进入此半径则弹到内层分区铺砖格上（不外飞到外围大地砖） */
       this.fountainTeleportRadius = 34;
+      /** 喷泉内池动态水面（每帧 redraw） */
+      this.fountainWaterG = null;
       /** create() 里填入：主广场四分区所在瓷砖网格（与 tileA/tileB 范围一致） */
       this.plazaTileGrid = null;
       /** 可爬的树（树干接地点，与 placeTree 的 x,y 一致） */
@@ -586,8 +631,406 @@ function initWorld() {
       this._arborealCooldownUntil = 0;
       /** 主广场可行走矩形（核心 tileA/tileB 区，不含外围大地砖）；create() 赋值 */
       this.plazaWalkBounds = null;
+      /** create() 写入：广场相对初版边长倍数，水池/摊位/碰撞垫等与坐标一致 */
+      this.plazaScale = 1;
       /** 四分区景观水池（随机形状）；动物不可进入，目标点也会避开 */
       this.plazaPools = [];
+      /** 蜥蜴蛋：约 10s 孵化；每次产 LIZARD_EGGS_PER_LAY 颗，总数受 MAX_LIZARD_EGGS_WORLD 限制 */
+      this.lizardEggs = [];
+      this._nextLizardEggLayAt = 0;
+      /** 分区水池内的鱼（sprite 在水面下、flow 之上） */
+      this.pondFish = [];
+      this.pondFishEggs = [];
+      /** @type {{ phase: string, poolIndex: number, catchDoneAt?: number, exitX?: number, exitY?: number, leaveUntil?: number } | null} */
+      this.catFishing = null;
+      this._nextCatFishAt = 0;
+      /** 井盖世界坐标（与 create 里 manhole 圆心一致），供鼠蟑传送与寻路 */
+      this.manholes = [];
+    }
+
+    nearestManholeTo(x, y) {
+      if (!this.manholes || !this.manholes.length) return null;
+      let best = this.manholes[0];
+      let bestD = Math.hypot(x - best.x, y - best.y);
+      for (let i = 1; i < this.manholes.length; i++) {
+        const h = this.manholes[i];
+        const d = Math.hypot(x - h.x, y - h.y);
+        if (d < bestD) {
+          bestD = d;
+          best = h;
+        }
+      }
+      return best;
+    }
+
+    /** 从入口 excludeManholeIndex 钻入后，随机从其他井盖 / 水池内或岸 / 喷泉内出现 */
+    randomManholeTunnelExit(excludeManholeIndex) {
+      const candidates = [];
+      for (let i = 0; i < (this.manholes || []).length; i++) {
+        if (i === excludeManholeIndex) continue;
+        const h = this.manholes[i];
+        candidates.push({
+          x: h.x + (Math.random() - 0.5) * 10,
+          y: h.y + (Math.random() - 0.5) * 10,
+        });
+      }
+      for (const pool of this.plazaPools || []) {
+        if (Math.random() < 0.52) {
+          candidates.push(this.randomPointInsidePlazaPool(pool));
+        } else {
+          candidates.push(this.randomPointNearPlazaPool(pool));
+        }
+      }
+      const ps = this.plazaScale || 1;
+      const ang = Math.random() * Math.PI * 2;
+      const rr = (4 + Math.random() * 10) * Math.min(1.1, ps);
+      candidates.push({ x: Math.cos(ang) * rr, y: Math.sin(ang) * rr });
+      if (!candidates.length) return this.randomPlazaWalkPointAvoidingPools();
+      return candidates[Math.floor(Math.random() * candidates.length)];
+    }
+
+    findManholeIndexAt(x, y) {
+      let best = -1;
+      let bestD = MANHOLE_ENTRY_RADIUS;
+      for (let i = 0; i < (this.manholes || []).length; i++) {
+        const h = this.manholes[i];
+        const d = Math.hypot(x - h.x, y - h.y);
+        if (d < bestD) {
+          bestD = d;
+          best = i;
+        }
+      }
+      return best;
+    }
+
+    mouseSeeksManhole(m, catX, catY, now) {
+      const mx = m.sprite.x;
+      const my = m.sprite.y;
+      if (this.catChaseMouse === m.sprite) return true;
+      if (Math.hypot(catX - mx, catY - my) < MOUSE_MANHOLE_PANIC_CAT) return true;
+      for (const snk of this.snakes || []) {
+        if (Math.hypot(snk.sprite.x - mx, snk.sprite.y - my) < MOUSE_MANHOLE_PANIC_SNAKE) return true;
+      }
+      for (const fr of this.frogs || []) {
+        const fp = fr.sprite;
+        if (!fp || !fp.active) continue;
+        if (Math.hypot(fp.x - mx, fp.y - my) < MOUSE_MANHOLE_PANIC_FROG) return true;
+      }
+      return false;
+    }
+
+    roachSeeksManhole(ro, now) {
+      const rx = ro.sprite.x;
+      const ry = ro.sprite.y;
+      for (const lz of this.lizards || []) {
+        if (this.arboreal && this.arboreal.liz === lz && !this.arboreal.lizardFled) continue;
+        const sp = lz.sprite;
+        if (Math.hypot(sp.x - rx, sp.y - ry) < ROACH_MANHOLE_PANIC_LIZARD) return true;
+      }
+      for (const snk of this.snakes || []) {
+        if (Math.hypot(snk.sprite.x - rx, snk.sprite.y - ry) < ROACH_MANHOLE_PANIC_SNAKE) return true;
+      }
+      for (const fr of this.frogs || []) {
+        const fp = fr.sprite;
+        if (!fp || !fp.active) continue;
+        if (Math.hypot(fp.x - rx, fp.y - ry) < ROACH_MANHOLE_PANIC_FROG) return true;
+      }
+      return false;
+    }
+
+    tryManholeTeleportMouse(m, now) {
+      if (!(this.manholes && this.manholes.length)) return false;
+      if (now < (m.nextManholeAt || 0)) return false;
+      const hi = this.findManholeIndexAt(m.sprite.x, m.sprite.y);
+      if (hi < 0) return false;
+      const exit = this.randomManholeTunnelExit(hi);
+      if (!exit) return false;
+      const c = this.clampPosToPlaza(exit.x, exit.y, m.sprite, true);
+      m.sprite.setPosition(c.x, c.y);
+      m.home.x = c.x;
+      m.home.y = c.y;
+      m.nextManholeAt = now + MANHOLE_COOLDOWN_MS;
+      this.pickMouseTarget(m);
+      if (this.catChaseMouse === m.sprite) this.catChaseMouse = null;
+      return true;
+    }
+
+    tryManholeTeleportRoach(ro, now) {
+      if (!(this.manholes && this.manholes.length)) return false;
+      if (now < (ro.nextManholeAt || 0)) return false;
+      const hi = this.findManholeIndexAt(ro.sprite.x, ro.sprite.y);
+      if (hi < 0) return false;
+      const exit = this.randomManholeTunnelExit(hi);
+      if (!exit) return false;
+      const c = this.clampPosToPlaza(exit.x, exit.y, ro.sprite, true);
+      ro.sprite.setPosition(c.x, c.y);
+      ro.home.x = c.x;
+      ro.home.y = c.y;
+      ro.nextManholeAt = now + MANHOLE_COOLDOWN_MS;
+      this.pickRoachTarget(ro);
+      return true;
+    }
+
+    poolCenter(pool) {
+      if (!pool) return { x: 0, y: 0 };
+      if (pool.kind === "ellipse") return { x: pool.cx, y: pool.cy };
+      return { x: pool.flowCx, y: pool.flowCy };
+    }
+
+    nearestPlazaPoolIndexTo(x, y) {
+      if (!this.plazaPools || !this.plazaPools.length) return -1;
+      let best = 0;
+      let bestD = Infinity;
+      for (let i = 0; i < this.plazaPools.length; i++) {
+        const c = this.poolCenter(this.plazaPools[i]);
+        const d = Math.hypot(x - c.x, y - c.y);
+        if (d < bestD) {
+          bestD = d;
+          best = i;
+        }
+      }
+      return best;
+    }
+
+    countFishInPool(poolIndex) {
+      return this.pondFish.filter((f) => f.poolIndex === poolIndex && f.sprite && f.sprite.active).length;
+    }
+
+    spawnPondFish(poolIndex, baby, prefX, prefY) {
+      if (poolIndex < 0 || poolIndex >= this.plazaPools.length) return;
+      if (this.countFishInPool(poolIndex) >= MAX_FISH_PER_POOL) return;
+      const pool = this.plazaPools[poolIndex];
+      const sc = this.plazaScale || 1;
+      const scaleMul = Math.min(1.15, sc * 0.72);
+      let pt;
+      if (prefX != null && prefY != null && this.pointInPlazaPool(pool, prefX, prefY)) {
+        pt = { x: prefX, y: prefY };
+      } else {
+        pt = this.randomPointInsidePlazaPool(pool);
+      }
+      const adultSc = 0.52 * scaleMul;
+      const babySc = 0.38 * scaleMul;
+      const sprite = this.add
+        .image(pt.x, pt.y, "pondFish")
+        .setOrigin(0.5)
+        .setDepth(4.15)
+        .setScale(baby ? babySc : adultSc);
+      sprite.setTint(POND_FISH_TINTS[Math.floor(Math.random() * POND_FISH_TINTS.length)]);
+      const now = this.time.now;
+      this.pondFish.push({
+        sprite,
+        poolIndex,
+        target: { x: pt.x, y: pt.y },
+        retargetAt: now + 400 + Math.random() * 400,
+        baby: !!baby,
+        matureAt: baby ? now + FISH_MATURE_MS : 0,
+        nextBreedAt: baby ? now + FISH_MATURE_MS + 2000 : now + 2000,
+      });
+    }
+
+    spawnFishEgg(poolIndex, x, y, now) {
+      const pool = this.plazaPools[poolIndex];
+      if (!pool) return;
+      let px = x;
+      let py = y;
+      if (!this.pointInPlazaPool(pool, px, py)) {
+        const p = this.randomPointInsidePlazaPool(pool);
+        px = p.x;
+        py = p.y;
+      }
+      const r = 3.2 * (this.plazaScale || 1);
+      const egg = this.add
+        .circle(px, py, r, 0xfffacd, 0.92)
+        .setStrokeStyle(1, 0xc9a227, 0.85)
+        .setDepth(4.12);
+      this.pondFishEggs.push({
+        sprite: egg,
+        poolIndex,
+        hatchAt: now + FISH_EGG_HATCH_MS,
+      });
+    }
+
+    tryPondFishBreed(now) {
+      outer: for (let i = 0; i < this.pondFish.length; i++) {
+        const fa = this.pondFish[i];
+        if (!fa.sprite || !fa.sprite.active || fa.baby) continue;
+        for (let j = i + 1; j < this.pondFish.length; j++) {
+          const fb = this.pondFish[j];
+          if (!fb.sprite || !fb.sprite.active || fb.baby) continue;
+          if (fa.poolIndex !== fb.poolIndex) continue;
+          if (now < fa.nextBreedAt || now < fb.nextBreedAt) continue;
+          const pi = fa.poolIndex;
+          if (this.countFishInPool(pi) >= MAX_FISH_PER_POOL) continue;
+          if (Math.hypot(fa.sprite.x - fb.sprite.x, fa.sprite.y - fb.sprite.y) >= FISH_BREED_DIST) continue;
+          const midx = (fa.sprite.x + fb.sprite.x) / 2;
+          const midy = (fa.sprite.y + fb.sprite.y) / 2;
+          this.spawnFishEgg(pi, midx, midy, now);
+          fa.nextBreedAt = now + FISH_BREED_COOLDOWN_MS;
+          fb.nextBreedAt = now + FISH_BREED_COOLDOWN_MS;
+          break outer;
+        }
+      }
+    }
+
+    updatePondFish(now, dt) {
+      if (!this.plazaPools || !this.plazaPools.length) return;
+      this.pondFish = this.pondFish.filter((f) => f.sprite && f.sprite.active);
+      const sc = this.plazaScale || 1;
+      const scaleMul = Math.min(1.15, sc * 0.72);
+      const adultSc = 0.52 * scaleMul;
+
+      for (const f of this.pondFish) {
+        if (!f.sprite || !f.sprite.active) continue;
+        if (f.baby && now >= f.matureAt) {
+          f.baby = false;
+          f.sprite.setScale(adultSc);
+          f.nextBreedAt = now + 2500;
+        }
+        const pool = this.plazaPools[f.poolIndex];
+        if (!pool) continue;
+        if (now > f.retargetAt) {
+          f.retargetAt = now + 900 + Math.random() * 1400;
+          const p = this.randomPointInsidePlazaPool(pool);
+          f.target.x = p.x;
+          f.target.y = p.y;
+        }
+        let x = f.sprite.x;
+        let y = f.sprite.y;
+        const tx = f.target.x - x;
+        const ty = f.target.y - y;
+        const len = Math.hypot(tx, ty) || 1;
+        x += (tx / len) * FISH_SWIM_SPEED * dt;
+        y += (ty / len) * FISH_SWIM_SPEED * dt;
+        f.sprite.setPosition(x, y);
+        f.sprite.setFlipX(tx < 0);
+        if (!this.pointInPlazaPool(pool, f.sprite.x, f.sprite.y)) {
+          const p = this.randomPointInsidePlazaPool(pool);
+          f.sprite.setPosition(p.x, p.y);
+          f.target.x = p.x;
+          f.target.y = p.y;
+        }
+      }
+
+      for (let ei = this.pondFishEggs.length - 1; ei >= 0; ei--) {
+        const e = this.pondFishEggs[ei];
+        if (!e.sprite || !e.sprite.active) {
+          this.pondFishEggs.splice(ei, 1);
+          continue;
+        }
+        if (now < e.hatchAt) continue;
+        const pi = e.poolIndex;
+        const hx = e.sprite.x;
+        const hy = e.sprite.y;
+        e.sprite.destroy();
+        this.pondFishEggs.splice(ei, 1);
+        if (this.countFishInPool(pi) < MAX_FISH_PER_POOL) {
+          this.spawnPondFish(pi, true, hx, hy);
+        }
+      }
+
+      this.tryPondFishBreed(now);
+    }
+
+    updateCatFishing(cat, now, dt) {
+      const cf = this.catFishing;
+      if (!cf) return;
+      if (this.arboreal) {
+        this.catFishing = null;
+        this._nextCatFishAt = now + CAT_FISH_INTERVAL_MS;
+        return;
+      }
+      const pool = this.plazaPools[cf.poolIndex];
+      if (!pool) {
+        this.catFishing = null;
+        this._nextCatFishAt = now + CAT_FISH_INTERVAL_MS;
+        return;
+      }
+      const center = this.poolCenter(pool);
+      const vCat = 30;
+      const pad = 11 * (this.plazaScale || 1);
+
+      if (cf.phase === "approach") {
+        const b = this.nearestPointOnPlazaPoolBoundary(pool, cat.x, cat.y);
+        if (!b) {
+          this.catFishing = null;
+          this._nextCatFishAt = now + CAT_FISH_INTERVAL_MS;
+          return;
+        }
+        const vx = cat.x - center.x;
+        const vy = cat.y - center.y;
+        const vl = Math.hypot(vx, vy) || 1;
+        const tx = b.x + (vx / vl) * pad;
+        const ty = b.y + (vy / vl) * pad;
+        const dx = tx - cat.x;
+        const dy = ty - cat.y;
+        const d = Math.hypot(dx, dy) || 1;
+        if (d < 14) {
+          cf.phase = "catch";
+          cf.catchDoneAt = now + 520;
+        } else {
+          const step = Math.min(vCat * dt, d);
+          cat.x += (dx / d) * step;
+          cat.y += (dy / d) * step;
+        }
+        this.clampSpriteToPlaza(cat);
+        if (this.bounceIfNearFountain(cat, now)) this.catChaseMouse = null;
+        this.clampSpriteToPlaza(cat);
+        this.aimCatAt(cat, center.x, center.y);
+      } else if (cf.phase === "catch") {
+        this.aimCatAt(cat, center.x, center.y);
+        if (now >= (cf.catchDoneAt || 0)) {
+          const fishHere = this.pondFish.filter(
+            (f) => f.poolIndex === cf.poolIndex && f.sprite && f.sprite.active,
+          );
+          if (fishHere.length) {
+            const victim = fishHere[Math.floor(Math.random() * fishHere.length)];
+            const idx = this.pondFish.indexOf(victim);
+            if (idx >= 0) {
+              victim.sprite.destroy();
+              this.pondFish.splice(idx, 1);
+            }
+          }
+          cf.phase = "leave";
+          const away = this.randomPlazaWalkPointAvoidingPools();
+          if (away) {
+            cf.exitX = away.x;
+            cf.exitY = away.y;
+          } else {
+            const b = this.plazaWalkBounds;
+            cf.exitX = b ? b.minX + Math.random() * (b.maxX - b.minX) : cat.x + 80;
+            cf.exitY = b ? b.minY + Math.random() * (b.maxY - b.minY) : cat.y;
+          }
+          cf.leaveUntil = now + 4000;
+        }
+      } else if (cf.phase === "leave") {
+        const dx = (cf.exitX ?? cat.x) - cat.x;
+        const dy = (cf.exitY ?? cat.y) - cat.y;
+        const d = Math.hypot(dx, dy) || 1;
+        if (d < 20 || now >= (cf.leaveUntil || 0)) {
+          this.catFishing = null;
+          this._nextCatFishAt = now + CAT_FISH_INTERVAL_MS;
+        } else {
+          const step = Math.min(26 * dt, d);
+          cat.x += (dx / d) * step;
+          cat.y += (dy / d) * step;
+          this.clampSpriteToPlaza(cat);
+          if (this.bounceIfNearFountain(cat, now)) this.catChaseMouse = null;
+          this.clampSpriteToPlaza(cat);
+        }
+        this.aimCatAt(cat, cf.exitX ?? cat.x, cf.exitY ?? cat.y);
+      }
+    }
+
+    initPondFish() {
+      this.pondFish = [];
+      this.pondFishEggs = [];
+      this.catFishing = null;
+      this._nextCatFishAt = this.time.now + CAT_FISH_INTERVAL_MS;
+      for (let pi = 0; pi < this.plazaPools.length; pi++) {
+        for (let k = 0; k < POND_FISH_START; k++) {
+          this.spawnPondFish(pi, false);
+        }
+      }
     }
 
     pointInPlazaPool(pool, x, y) {
@@ -714,13 +1157,48 @@ function initWorld() {
       }
     }
 
+    /** 喷泉内池：水色脉动 + 椭圆波纹 + 游移高光 */
+    updateFountainWater(now) {
+      const g = this.fountainWaterG;
+      if (!g || !g.active) return;
+      g.clear();
+      const t = now * 0.001;
+      const hw = 12;
+      const hh = 12;
+      g.fillStyle(0x2e4f62, 0.92);
+      g.fillRect(-hw, -hh, hw * 2, hh * 2);
+      g.fillStyle(0x3d6a88, 0.72 + 0.14 * Math.sin(t * 2.3));
+      g.fillRect(-hw + 1, -hh + 1, hw * 2 - 2, hh * 2 - 2);
+      g.fillStyle(0x4a90c8, 0.38 + 0.16 * Math.sin(t * 2.8 + 0.6));
+      g.fillRect(-hw + 2, -hh + 2, hw * 2 - 4, hh * 2 - 4);
+
+      const wob = 0.92 + 0.06 * Math.sin(t * 1.5);
+      for (let i = 0; i < 4; i++) {
+        const ph = t * (2.4 + i * 0.33) + i * 1.4;
+        const rx = 5 + i * 3.2 + Math.sin(ph) * 1.4;
+        const ry = 4 + i * 2.6 + Math.cos(ph * 0.88) * 1.1;
+        const a = 0.14 + 0.12 * (0.5 + 0.5 * Math.sin(ph * 2.1));
+        g.lineStyle(1.2, 0xb8e8ff, a);
+        g.strokeEllipse(0, 0, rx * 2 * wob, ry * 2 * wob);
+      }
+
+      g.fillStyle(0xffffff, 0.16 + 0.14 * Math.sin(t * 4.8));
+      g.fillCircle(-3.5 + Math.sin(t * 2.2) * 4.5, -2 + Math.cos(t * 1.75) * 3.5, 2.2);
+      g.fillStyle(0xffffff, 0.1 + 0.12 * Math.sin(t * 4 + 1.7));
+      g.fillCircle(4 + Math.cos(t * 1.55) * 3.5, 3.2 + Math.sin(t * 2.25) * 2.8, 1.6);
+      g.fillStyle(0xe8f4fc, 0.32 + 0.18 * Math.sin(t * 3.4 + 0.4));
+      g.fillCircle(Math.sin(t * 1.85) * 2.5, -5 + Math.cos(t * 2.15), 2);
+    }
+
     createPlazaZonePools() {
       this.plazaPools = [];
+      const PS = this.plazaScale || 1;
+      const PZ = PLAZA_ZONE_POOL_LINEAR_SCALE;
       const zones = [
-        { x: -283, y: -215, water: 0x3a6f94, edge: 0x3d4d3a },
-        { x: 283, y: -215, water: 0x3d7090, edge: 0x2f4d68 },
-        { x: -283, y: 225, water: 0x387d8c, edge: 0x2d5648 },
-        { x: 283, y: 225, water: 0x3e7895, edge: 0x305d72 },
+        { x: -283 * PS, y: -215 * PS, water: 0x3a6f94, edge: 0x3d4d3a },
+        { x: 283 * PS, y: -215 * PS, water: 0x3d7090, edge: 0x2f4d68 },
+        { x: -283 * PS, y: 225 * PS, water: 0x387d8c, edge: 0x2d5648 },
+        { x: 283 * PS, y: 225 * PS, water: 0x3e7895, edge: 0x305d72 },
       ];
       const dFill = 4;
       const dFlow = 4.07;
@@ -733,8 +1211,8 @@ function initWorld() {
       zones.forEach((zc, zi) => {
         const shapeKind = shapeOrder[zi];
         const sgn = (v) => (v >= 0 ? 1 : -1);
-        const pcx = zc.x + sgn(zc.x) * (38 + Math.random() * 24);
-        const pcy = zc.y + sgn(zc.y) * (28 + Math.random() * 22);
+        const pcx = zc.x + sgn(zc.x) * (38 + Math.random() * 24) * PS;
+        const pcy = zc.y + sgn(zc.y) * (28 + Math.random() * 22) * PS;
         const g = this.add.graphics().setDepth(dFill);
         const flowGraphics = this.add.graphics().setDepth(dFlow);
         const tracePoly = (verts) => {
@@ -745,13 +1223,13 @@ function initWorld() {
         };
 
         g.fillStyle(zc.water, 0.91);
-        g.lineStyle(3, zc.edge, 0.95);
+        g.lineStyle(Math.max(1, 3 * PS * PZ), zc.edge, 0.95);
 
         let pool;
 
         if (shapeKind === 0) {
-          const rx = 34 + Math.random() * 10;
-          const ry = 14 + Math.random() * 8;
+          const rx = (34 + Math.random() * 10) * PS * PZ;
+          const ry = (14 + Math.random() * 8) * PS * PZ;
           const rot = Math.random() * Math.PI;
           const steps = 26;
           g.beginPath();
@@ -783,8 +1261,8 @@ function initWorld() {
             flowGraphics,
           };
         } else if (shapeKind === 1) {
-          const rx = 14 + Math.random() * 8;
-          const ry = 32 + Math.random() * 12;
+          const rx = (14 + Math.random() * 8) * PS * PZ;
+          const ry = (32 + Math.random() * 12) * PS * PZ;
           const rot = Math.random() * Math.PI;
           const steps = 26;
           g.beginPath();
@@ -818,7 +1296,7 @@ function initWorld() {
         } else if (shapeKind === 2) {
           const n = 7;
           const verts = [];
-          const r0 = 24 + Math.random() * 14;
+          const r0 = (24 + Math.random() * 14) * PS * PZ;
           for (let i = 0; i < n; i++) {
             const ang = (i / n) * Math.PI * 2 + (Math.random() - 0.5) * 0.55;
             const rad = r0 * (0.68 + Math.random() * 0.38);
@@ -850,8 +1328,8 @@ function initWorld() {
             flowGraphics,
           };
         } else {
-          const w = 28 + Math.random() * 10;
-          const h = 17 + Math.random() * 9;
+          const w = (28 + Math.random() * 10) * PS * PZ;
+          const h = (17 + Math.random() * 9) * PS * PZ;
           const rot = Math.random() * Math.PI;
           const verts8 = [];
           for (let i = 0; i < 8; i++) {
@@ -893,7 +1371,7 @@ function initWorld() {
       });
     }
 
-    clampPosToPlaza(x, y) {
+    clampPosToPlaza(x, y, sprite = null, allowInsidePools = false) {
       const b = this.plazaWalkBounds;
       let px = x;
       let py = y;
@@ -901,17 +1379,218 @@ function initWorld() {
         px = Math.max(b.minX, Math.min(b.maxX, x));
         py = Math.max(b.minY, Math.min(b.maxY, y));
       }
-      if (this.plazaPools && this.plazaPools.length) {
-        const q = this.pushOutOfPlazaPools(px, py, 11);
+      if (!allowInsidePools && this.plazaPools && this.plazaPools.length) {
+        const inPool = this.pointInAnyPlazaPool(px, py);
+        if (sprite && sprite.active && inPool) {
+          const tnow = this.time.now;
+          if (sprite._plazaPoolEnterAt == null) sprite._plazaPoolEnterAt = tnow;
+          if (tnow - sprite._plazaPoolEnterAt < PLAZA_POOL_ESCAPE_MS) {
+            return { x: px, y: py };
+          }
+          sprite._plazaPoolEnterAt = null;
+        } else if (sprite && sprite.active && !inPool) {
+          sprite._plazaPoolEnterAt = null;
+        }
+        const q = this.pushOutOfPlazaPools(px, py, 11 * (this.plazaScale || 1));
         px = q.x;
         py = q.y;
       }
       return { x: px, y: py };
     }
 
-    clampSpriteToPlaza(sprite) {
-      const p = this.clampPosToPlaza(sprite.x, sprite.y);
+    clampSpriteToPlaza(sprite, allowInsidePools = false) {
+      const p = this.clampPosToPlaza(sprite.x, sprite.y, sprite, allowInsidePools);
       sprite.setPosition(p.x, p.y);
+    }
+
+    randomPointInsidePlazaPool(pool) {
+      if (!pool) return { x: 0, y: 0 };
+      if (pool.kind === "ellipse") {
+        const u = Math.random() * Math.PI * 2;
+        const rr = Math.sqrt(Math.random()) * 0.9;
+        const lx = pool.rx * rr * Math.cos(u);
+        const ly = pool.ry * rr * Math.sin(u);
+        const c = Math.cos(pool.rot);
+        const s = Math.sin(pool.rot);
+        return {
+          x: pool.cx + lx * c - ly * s,
+          y: pool.cy + lx * s + ly * c,
+        };
+      }
+      const verts = pool.verts;
+      let sx = 0;
+      let sy = 0;
+      for (const v of verts) {
+        sx += v.x;
+        sy += v.y;
+      }
+      sx /= verts.length;
+      sy /= verts.length;
+      const reach = (pool.flowRx + pool.flowRy) * 0.55;
+      for (let k = 0; k < 36; k++) {
+        const ang = Math.random() * Math.PI * 2;
+        const rad = Math.random() * reach;
+        const tx = sx + Math.cos(ang) * rad;
+        const ty = sy + Math.sin(ang) * rad;
+        if (this.pointInPlazaPool(pool, tx, ty)) return { x: tx, y: ty };
+      }
+      return { x: sx, y: sy };
+    }
+
+    /** 牛蛙短时上岸：距池岸法向 FROG_SHORE_OUT_MIN–FROG_SHORE_OUT_MAX 像素 */
+    randomPointNearPlazaPool(pool) {
+      if (!pool) return { x: 0, y: 0 };
+      const ps = this.plazaScale || 1;
+      const dist =
+        (FROG_SHORE_OUT_MIN + Math.random() * (FROG_SHORE_OUT_MAX - FROG_SHORE_OUT_MIN)) * ps;
+      for (let k = 0; k < 28; k++) {
+        if (pool.kind === "ellipse") {
+          const u = Math.random() * Math.PI * 2;
+          const lx = pool.rx * Math.cos(u);
+          const ly = pool.ry * Math.sin(u);
+          const c = Math.cos(pool.rot);
+          const s = Math.sin(pool.rot);
+          const bx = pool.cx + lx * c - ly * s;
+          const by = pool.cy + lx * s + ly * c;
+          let nx = bx - pool.cx;
+          let ny = by - pool.cy;
+          const nl = Math.hypot(nx, ny) || 1;
+          nx /= nl;
+          ny /= nl;
+          const wx = bx + nx * dist;
+          const wy = by + ny * dist;
+          if (!this.pointInPlazaPool(pool, wx, wy)) {
+            return { x: wx, y: wy };
+          }
+        } else {
+          const verts = pool.verts;
+          const i = Math.floor(Math.random() * verts.length);
+          const a = verts[i];
+          const b = verts[(i + 1) % verts.length];
+          const t = Math.random();
+          const bx = a.x + (b.x - a.x) * t;
+          const by = a.y + (b.y - a.y) * t;
+          let nx = -(b.y - a.y);
+          let ny = b.x - a.x;
+          const nl = Math.hypot(nx, ny) || 1;
+          nx /= nl;
+          ny /= nl;
+          let sx = 0;
+          let sy = 0;
+          for (const v of verts) {
+            sx += v.x;
+            sy += v.y;
+          }
+          sx /= verts.length;
+          sy /= verts.length;
+          if ((bx - sx) * nx + (by - sy) * ny < 0) {
+            nx = -nx;
+            ny = -ny;
+          }
+          const wx = bx + nx * dist;
+          const wy = by + ny * dist;
+          if (!this.pointInPlazaPool(pool, wx, wy)) {
+            return { x: wx, y: wy };
+          }
+        }
+      }
+      return this.randomPointInsidePlazaPool(pool);
+    }
+
+    nearestPointOnPlazaPoolBoundary(pool, wx, wy) {
+      if (!pool) return null;
+      if (pool.kind === "ellipse") {
+        const dx = wx - pool.cx;
+        const dy = wy - pool.cy;
+        const c = Math.cos(-pool.rot);
+        const s = Math.sin(-pool.rot);
+        const lx = dx * c - dy * s;
+        const ly = dx * s + dy * c;
+        const k = Math.sqrt((lx / pool.rx) ** 2 + (ly / pool.ry) ** 2) || 1e-8;
+        const blx = lx / k;
+        const bly = ly / k;
+        const c2 = Math.cos(pool.rot);
+        const s2 = Math.sin(pool.rot);
+        return {
+          x: pool.cx + blx * c2 - bly * s2,
+          y: pool.cy + blx * s2 + bly * c2,
+        };
+      }
+      const verts = pool.verts;
+      let best = null;
+      let bestD = Infinity;
+      const n = verts.length;
+      for (let i = 0; i < n; i++) {
+        const a = verts[i];
+        const b = verts[(i + 1) % n];
+        const q = plazaClosestOnSegment(wx, wy, a.x, a.y, b.x, b.y);
+        const d = Math.hypot(wx - q.x, wy - q.y);
+        if (d < bestD) {
+          bestD = d;
+          best = q;
+        }
+      }
+      return best;
+    }
+
+    clampFrogToPoolShore(fp) {
+      if (!fp || !fp.active || !this.plazaPools || !this.plazaPools.length) return;
+      const shoreMax = FROG_SHORE_OUT_MAX * (this.plazaScale || 1);
+      const x = fp.x;
+      const y = fp.y;
+      if (this.pointInAnyPlazaPool(x, y)) return;
+      let bestNb = null;
+      let bestDist = Infinity;
+      for (const pool of this.plazaPools) {
+        const nb = this.nearestPointOnPlazaPoolBoundary(pool, x, y);
+        if (!nb) continue;
+        const d = Math.hypot(x - nb.x, y - nb.y);
+        if (d < bestDist) {
+          bestDist = d;
+          bestNb = nb;
+        }
+      }
+      if (!bestNb || bestDist <= shoreMax) return;
+      const ux = (x - bestNb.x) / bestDist;
+      const uy = (y - bestNb.y) / bestDist;
+      fp.setPosition(bestNb.x + ux * shoreMax, bestNb.y + uy * shoreMax);
+    }
+
+    pickFrogTarget(frog) {
+      if (!this.plazaPools || !this.plazaPools.length) {
+        const pt = this.randomPlazaWalkPointAvoidingPools();
+        if (pt) {
+          frog.target.x = pt.x;
+          frog.target.y = pt.y;
+        }
+        return;
+      }
+      const pool = this.plazaPools[Math.floor(Math.random() * this.plazaPools.length)];
+      if (Math.random() < 0.52) {
+        const p = this.randomPointInsidePlazaPool(pool);
+        frog.target.x = p.x;
+        frog.target.y = p.y;
+      } else {
+        const p = this.randomPointNearPlazaPool(pool);
+        const c = this.clampPosToPlaza(p.x, p.y, null, true);
+        frog.target.x = c.x;
+        frog.target.y = c.y;
+      }
+    }
+
+    createFrogAt(x, y) {
+      const sprite = this.add
+        .image(x, y, "frog")
+        .setOrigin(0.5, 0.52)
+        .setDepth(15.6)
+        .setScale(0.58);
+      return {
+        sprite,
+        home: { x, y },
+        target: { x, y },
+        retargetAt: 0,
+        nextEatAt: 0,
+      };
     }
 
     findNearestTreeSpot(x, y, maxDist) {
@@ -945,7 +1624,7 @@ function initWorld() {
         catDownAt: null,
         lizardFlip: sp.flipX,
       };
-      const pc = this.clampPosToPlaza(tree.x, perchY);
+      const pc = this.clampPosToPlaza(tree.x, perchY, sp);
       sp.setPosition(pc.x, pc.y);
       sp.setDepth(20);
       sp.setFlipX(this.arboreal.lizardFlip);
@@ -961,7 +1640,7 @@ function initWorld() {
       const ul = Math.hypot(ux, uy) || 1;
       let gx = a.lizardPerchX + (ux / ul) * 52;
       let gy = a.lizardPerchY + (uy / ul) * 52;
-      const c0 = this.clampPosToPlaza(gx, gy);
+      const c0 = this.clampPosToPlaza(gx, gy, sp);
       gx = c0.x;
       gy = c0.y;
       sp.setPosition(gx, gy);
@@ -979,7 +1658,7 @@ function initWorld() {
       if (sprite._fountainImmuneUntil && now < sprite._fountainImmuneUntil) return false;
       if (Math.hypot(sprite.x, sprite.y) >= this.fountainTeleportRadius) return false;
       const { halfW, halfH, tile, cols, rows } = g;
-      const avoidR = this.fountainTeleportRadius + 14;
+      const avoidR = this.fountainTeleportRadius + 14 * (this.plazaScale || 1);
       let x;
       let y;
       let ok = false;
@@ -1010,7 +1689,7 @@ function initWorld() {
         }
       }
       if (!ok) {
-        const fb = this.clampPosToPlaza(110, 0);
+        const fb = this.clampPosToPlaza(110 * (this.plazaScale || 1), 0);
         x = fb.x;
         y = fb.y;
       }
@@ -1054,6 +1733,7 @@ function initWorld() {
     }
 
     nearestLizardEntry(cat) {
+      if (!this.lizards.length) return null;
       let best = this.lizards[0];
       let bestD = Infinity;
       for (const lz of this.lizards) {
@@ -1064,6 +1744,31 @@ function initWorld() {
         }
       }
       return best;
+    }
+
+    createLizardEggAt(x, y, now) {
+      const sprite = this.add
+        .image(x, y, "lizardEgg")
+        .setOrigin(0.5, 0.55)
+        .setDepth(14.5)
+        .setScale(0.72);
+      return {
+        sprite,
+        hatchAt: now + LIZARD_EGG_HATCH_MS,
+      };
+    }
+
+    spawnHatchLizardNear(x, y) {
+      if (this.lizards.length >= MAX_LIZARDS) return;
+      const c = this.clampPosToPlaza(x + (Math.random() - 0.5) * 14, y + (Math.random() - 0.5) * 14);
+      const lz = {
+        sprite: this.add.image(c.x, c.y, "lizard").setOrigin(0.5).setDepth(16),
+        home: { x: c.x, y: c.y },
+        target: { x: c.x, y: c.y },
+        retargetAt: this.time.now + 500 + Math.random() * 400,
+      };
+      this.pickLizardTarget(lz);
+      this.lizards.push(lz);
     }
 
     pickMouseTarget(mouse) {
@@ -1122,6 +1827,8 @@ function initWorld() {
         target: { x, y },
         retargetAt: 0,
         nextRoachEatAt: 0,
+        nextEggEatAt: 0,
+        nextManholeAt: 0,
       };
     }
 
@@ -1159,12 +1866,13 @@ function initWorld() {
         .image(x, y, "roach")
         .setOrigin(0.5)
         .setDepth(15)
-        .setScale(0.5);
+        .setScale(0.25);
       return {
         sprite,
         home: { x, y },
         target: { x, y },
         retargetAt: 0,
+        nextManholeAt: 0,
       };
     }
 
@@ -1212,6 +1920,8 @@ function initWorld() {
         wrigglePhase: Math.random() * Math.PI * 2,
         nextEatMouseAt: 0,
         nextEatRoachAt: 0,
+        nextEatEggAt: 0,
+        nextEatLizardAt: 0,
       };
     }
 
@@ -1257,12 +1967,23 @@ function initWorld() {
 
     update(_t, delta) {
       const now = this.time.now;
-      this.updatePlazaPoolFlow(now);
-      const cat = this.cat;
-      if (!cat || !this.lizards.length) return;
       const dt = Math.min((delta || 16) / 1000, 0.045);
+      this.updatePlazaPoolFlow(now);
+      this.updateFountainWater(now);
+      this.updatePondFish(now, dt);
+      const cat = this.cat;
+      if (!cat) return;
+
+      if (!this.catFishing && !this.arboreal && this.plazaPools.length && now >= this._nextCatFishAt) {
+        const pi = this.nearestPlazaPoolIndexTo(cat.x, cat.y);
+        if (pi >= 0) {
+          this.catFishing = { phase: "approach", poolIndex: pi };
+          this.catChaseMouse = null;
+        }
+      }
       const cx0 = cat.x;
       const cy0 = cat.y;
+      const chaseMouseSpriteEarly = this.resolveCatMouseChase(cat);
       const MOUSE_AGRO = 52;
       const MOUSE_CATCH = 13;
       const MOUSE_BREED_DIST = 22;
@@ -1275,7 +1996,45 @@ function initWorld() {
       const MOUSE_HERD_AVOID_CAT_OUT = 78;
       const MOUSE_HERD_AVOID_CAT_IN = 40;
 
+      for (let ei = this.lizardEggs.length - 1; ei >= 0; ei--) {
+        const egg = this.lizardEggs[ei];
+        if (now < egg.hatchAt) continue;
+        let room = MAX_LIZARDS - this.lizards.length;
+        if (room > 0) {
+          this.spawnHatchLizardNear(egg.sprite.x, egg.sprite.y);
+          room--;
+        }
+        if (room > 0 && Math.random() < LIZARD_EGG_DOUBLE_HATCH_CHANCE) {
+          this.spawnHatchLizardNear(egg.sprite.x, egg.sprite.y);
+        }
+        egg.sprite.destroy();
+        this.lizardEggs.splice(ei, 1);
+      }
+
+      if (
+        this.lizards.length < 3 &&
+        this.lizardEggs.length + LIZARD_EGGS_PER_LAY <= MAX_LIZARD_EGGS_WORLD &&
+        now >= this._nextLizardEggLayAt
+      ) {
+        this._nextLizardEggLayAt = now + 2400 + Math.random() * 2200;
+        const eligible = this.lizards.filter(
+          (lz) => !(this.arboreal && this.arboreal.liz === lz && !this.arboreal.lizardFled),
+        );
+        if (eligible.length) {
+          const lz = eligible[Math.floor(Math.random() * eligible.length)];
+          for (let li = 0; li < LIZARD_EGGS_PER_LAY; li++) {
+            if (this.lizardEggs.length >= MAX_LIZARD_EGGS_WORLD) break;
+            const ex = lz.sprite.x + (Math.random() - 0.5) * 18;
+            const ey = lz.sprite.y + (Math.random() - 0.5) * 18;
+            const ec = this.clampPosToPlaza(ex, ey);
+            this.lizardEggs.push(this.createLizardEggAt(ec.x, ec.y, now));
+          }
+        }
+      }
+
       for (const m of this.mice) {
+        if (this.tryManholeTeleportMouse(m, now)) continue;
+
         if (!herdSeek) {
           if (now > m.retargetAt) {
             m.retargetAt = now + 1100 + Math.random() * 1100;
@@ -1290,7 +2049,10 @@ function initWorld() {
         let mlen;
         let flipLeft;
 
-        if (herdSeek) {
+        const mousePanic = this.mouseSeeksManhole(m, cx0, cy0, now);
+        const mh = mousePanic && this.manholes.length ? this.nearestManholeTo(mx, my) : null;
+
+        if (herdSeek && !mousePanic) {
           let bestD = Infinity;
           let ox = mx;
           let oy = my;
@@ -1313,6 +2075,16 @@ function initWorld() {
             mlen = 1;
           }
           flipLeft = mtx < 0;
+        } else if (mh) {
+          mtx = mh.x - mx;
+          mty = mh.y - my;
+          mlen = Math.hypot(mtx, mty) || 1;
+          if (mlen < 2) {
+            mtx = 1;
+            mty = 0;
+            mlen = 1;
+          }
+          flipLeft = mtx < 0;
         } else {
           mtx = m.target.x - mx;
           mty = m.target.y - my;
@@ -1328,7 +2100,7 @@ function initWorld() {
 
         const vMouse = 21;
 
-        if (herdSeek) {
+        if (herdSeek && !mousePanic) {
           let sx = mtx / mlen;
           let sy = mty / mlen;
           const toCatX = cx0 - mx;
@@ -1357,7 +2129,7 @@ function initWorld() {
           let mdy = my - cy0;
           let mdist = Math.hypot(mdx, mdy) || 1;
           if (mdist < 46) {
-            const mf = 58 * dt;
+            const mf = (mousePanic ? 72 : 58) * dt;
             mx -= (mdx / mdist) * mf;
             my -= (mdy / mdist) * mf;
           }
@@ -1380,6 +2152,17 @@ function initWorld() {
               ro.sprite.destroy();
               this.roaches.splice(ri, 1);
               m.nextRoachEatAt = now + MOUSE_ROACH_EAT_COOLDOWN_MS;
+              break;
+            }
+          }
+        }
+        if (now >= (m.nextEggEatAt || 0)) {
+          for (let gi = this.lizardEggs.length - 1; gi >= 0; gi--) {
+            const egg = this.lizardEggs[gi];
+            if (Math.hypot(egg.sprite.x - m.sprite.x, egg.sprite.y - m.sprite.y) < EGG_EAT_DIST) {
+              egg.sprite.destroy();
+              this.lizardEggs.splice(gi, 1);
+              m.nextEggEatAt = now + MOUSE_SNAKE_EGG_EAT_COOLDOWN_MS;
               break;
             }
           }
@@ -1412,6 +2195,8 @@ function initWorld() {
       /** 略放宽，方便在蜥蜴压力下仍能碰头繁殖 */
       const ROACH_BREED_DIST = 26;
       const MAX_ROACHES = 96;
+      /** 全广场只剩 1 只蟑螂时立刻在旁补殖的数量（不含母体；受 MAX_ROACHES 截断） */
+      const ROACH_LAST_STAND_BROOD = 10;
       const V_LIZARD_CHASE_ROACH = 20;
       const ROACH_FLEE_LIZARD_RADIUS = 50;
       const ROACH_FLEE_ACCEL = 13;
@@ -1419,23 +2204,43 @@ function initWorld() {
       const ROACH_FLEE_SNAKE_ACCEL = 10;
 
       for (const ro of this.roaches) {
-        if (now > ro.retargetAt) {
+        if (this.tryManholeTeleportRoach(ro, now)) continue;
+
+        const roachPanic = this.roachSeeksManhole(ro, now);
+        const roachMh = roachPanic && this.manholes.length ? this.nearestManholeTo(ro.sprite.x, ro.sprite.y) : null;
+
+        if (!roachMh && now > ro.retargetAt) {
           ro.retargetAt = now + 1600 + Math.random() * 2000;
           this.pickRoachTarget(ro);
         }
         let rx = ro.sprite.x;
         let ry = ro.sprite.y;
-        let rtx = ro.target.x - rx;
-        let rty = ro.target.y - ry;
-        let rlen = Math.hypot(rtx, rty) || 1;
-        if (rlen < 3) {
-          this.pickRoachTarget(ro);
+        let rtx;
+        let rty;
+        let rlen;
+        if (roachMh) {
+          rtx = roachMh.x - rx;
+          rty = roachMh.y - ry;
+          rlen = Math.hypot(rtx, rty) || 1;
+          if (rlen < 2) {
+            rtx = 1;
+            rty = 0;
+            rlen = 1;
+          }
+        } else {
           rtx = ro.target.x - rx;
           rty = ro.target.y - ry;
           rlen = Math.hypot(rtx, rty) || 1;
+          if (rlen < 3) {
+            this.pickRoachTarget(ro);
+            rtx = ro.target.x - rx;
+            rty = ro.target.y - ry;
+            rlen = Math.hypot(rtx, rty) || 1;
+          }
         }
-        rx += (rtx / rlen) * V_ROACH * dt;
-        ry += (rty / rlen) * V_ROACH * dt;
+        const vRoachEff = roachPanic ? V_ROACH * 1.35 : V_ROACH;
+        rx += (rtx / rlen) * vRoachEff * dt;
+        ry += (rty / rlen) * vRoachEff * dt;
 
         let fx = 0;
         let fy = 0;
@@ -1467,7 +2272,7 @@ function initWorld() {
 
         ro.sprite.setPosition(rx, ry);
         this.clampSpriteToPlaza(ro.sprite);
-        ro.sprite.setFlipX((ro.target.x - rx) < 0);
+        ro.sprite.setFlipX(roachMh ? rtx < 0 : (ro.target.x - rx) < 0);
         if (this.bounceIfNearFountain(ro.sprite, now)) {
           ro.home.x = ro.sprite.x;
           ro.home.y = ro.sprite.y;
@@ -1475,6 +2280,28 @@ function initWorld() {
           ro.retargetAt = now + 400;
         }
         this.clampSpriteToPlaza(ro.sprite);
+      }
+
+      if (this.roaches.length === 1) {
+        const sole = this.roaches[0];
+        if (sole?.sprite?.active) {
+          const room = MAX_ROACHES - this.roaches.length;
+          const addN = Math.min(ROACH_LAST_STAND_BROOD, room);
+          if (addN > 0) {
+            const sx = sole.sprite.x;
+            const sy = sole.sprite.y;
+            for (let k = 0; k < addN; k++) {
+              const nx = sx + (Math.random() - 0.5) * 40;
+              const ny = sy + (Math.random() - 0.5) * 40;
+              const bc = this.clampPosToPlaza(nx, ny);
+              const nr = this.createRoachAt(bc.x, bc.y);
+              this.pickRoachTarget(nr);
+              nr.retargetAt = now + 450 + k * 70;
+              this.roaches.push(nr);
+            }
+            this.roachBreedLock = now + 1400;
+          }
+        }
       }
 
       if (now > this.roachBreedLock && this.roaches.length < MAX_ROACHES) {
@@ -1518,6 +2345,7 @@ function initWorld() {
         let preyY = null;
         let bestPd = SNAKE_HUNT_RANGE;
         const canHuntMouse = now >= (snk.nextEatMouseAt || 0);
+        const canHuntEgg = now >= (snk.nextEatEggAt || 0);
         if (canHuntMouse) {
           for (const m of this.mice) {
             const d = Math.hypot(m.sprite.x - sx, m.sprite.y - sy);
@@ -1534,6 +2362,26 @@ function initWorld() {
             bestPd = d;
             preyX = ro.sprite.x;
             preyY = ro.sprite.y;
+          }
+        }
+        for (const lz of this.lizards) {
+          if (this.arboreal && this.arboreal.liz === lz && !this.arboreal.lizardFled) continue;
+          const lp = lz.sprite;
+          const d = Math.hypot(lp.x - sx, lp.y - sy);
+          if (d < bestPd) {
+            bestPd = d;
+            preyX = lp.x;
+            preyY = lp.y;
+          }
+        }
+        if (canHuntEgg) {
+          for (const egg of this.lizardEggs) {
+            const d = Math.hypot(egg.sprite.x - sx, egg.sprite.y - sy);
+            if (d < bestPd) {
+              bestPd = d;
+              preyX = egg.sprite.x;
+              preyY = egg.sprite.y;
+            }
           }
         }
 
@@ -1597,15 +2445,39 @@ function initWorld() {
             }
           }
         }
+        if (now >= (snk.nextEatLizardAt || 0)) {
+          for (let li = this.lizards.length - 1; li >= 0; li--) {
+            const lz = this.lizards[li];
+            if (this.arboreal && this.arboreal.liz === lz && !this.arboreal.lizardFled) continue;
+            const lsp = lz.sprite;
+            if (Math.hypot(lsp.x - sp.x, lsp.y - sp.y) < SNAKE_EAT_DIST) {
+              if (this.arboreal && this.arboreal.liz === lz) this.arboreal = null;
+              lsp.destroy();
+              this.lizards.splice(li, 1);
+              snk.nextEatLizardAt = now + SNAKE_EAT_LIZARD_COOLDOWN_MS;
+              break;
+            }
+          }
+        }
+        if (now >= (snk.nextEatEggAt || 0)) {
+          for (let gi = this.lizardEggs.length - 1; gi >= 0; gi--) {
+            const egg = this.lizardEggs[gi];
+            if (Math.hypot(egg.sprite.x - sp.x, egg.sprite.y - sp.y) < EGG_EAT_DIST) {
+              egg.sprite.destroy();
+              this.lizardEggs.splice(gi, 1);
+              snk.nextEatEggAt = now + MOUSE_SNAKE_EGG_EAT_COOLDOWN_MS;
+              break;
+            }
+          }
+        }
       }
 
-      const chaseMouseSpriteEarly = this.resolveCatMouseChase(cat);
       let skipCatGround = false;
       if (this.arboreal) {
         const a = this.arboreal;
         const treeLizSp = a.liz.sprite;
         if (a.catJoined && a.lizardFled && a.catDownAt != null && now >= a.catDownAt) {
-          const cp = this.clampPosToPlaza(a.baseX - 8 + (Math.random() - 0.5) * 4, a.baseY + 4);
+          const cp = this.clampPosToPlaza(a.baseX - 8 + (Math.random() - 0.5) * 4, a.baseY + 4, this.cat);
           this.cat.setPosition(cp.x, cp.y);
           this.cat.setDepth(15);
           const lzRef = a.liz;
@@ -1614,7 +2486,7 @@ function initWorld() {
           this.pickLizardTarget(lzRef);
           lzRef.retargetAt = now + 700;
         } else if (!a.catJoined && !a.lizardFled && now >= a.lizardSoloDownAt) {
-          const lp = this.clampPosToPlaza(a.baseX + (Math.random() - 0.5) * 6, a.baseY + 2);
+          const lp = this.clampPosToPlaza(a.baseX + (Math.random() - 0.5) * 6, a.baseY + 2, treeLizSp);
           treeLizSp.setPosition(lp.x, lp.y);
           treeLizSp.setDepth(16);
           const lzRef = a.liz;
@@ -1662,6 +2534,11 @@ function initWorld() {
             this.aimCatAt(cat, a.liz.sprite.x, a.liz.sprite.y);
           }
         }
+      }
+
+      if (this.catFishing) {
+        skipCatGround = true;
+        this.updateCatFishing(cat, now, dt);
       }
 
       for (const lz of this.lizards) {
@@ -1752,10 +2629,145 @@ function initWorld() {
         }
       }
 
+      const V_FROG = 19;
+      const fPS = this.plazaScale || 1;
+      const FROG_HUNT_RANGE = 112 * fPS;
+      const FROG_EAT_DIST = 12 * fPS;
+      const FROG_EAT_COOLDOWN_MS = 720;
+
+      for (const fr of this.frogs) {
+        const fp = fr.sprite;
+        let fx = fp.x;
+        let fy = fp.y;
+
+        let preyX = null;
+        let preyY = null;
+        let bestFd = FROG_HUNT_RANGE;
+        for (const m of this.mice) {
+          const d = Math.hypot(m.sprite.x - fx, m.sprite.y - fy);
+          if (d < bestFd) {
+            bestFd = d;
+            preyX = m.sprite.x;
+            preyY = m.sprite.y;
+          }
+        }
+        for (const ro of this.roaches) {
+          const d = Math.hypot(ro.sprite.x - fx, ro.sprite.y - fy);
+          if (d < bestFd) {
+            bestFd = d;
+            preyX = ro.sprite.x;
+            preyY = ro.sprite.y;
+          }
+        }
+        for (const lz of this.lizards) {
+          if (this.arboreal && this.arboreal.liz === lz && !this.arboreal.lizardFled) continue;
+          const lsp = lz.sprite;
+          const d = Math.hypot(lsp.x - fx, lsp.y - fy);
+          if (d < bestFd) {
+            bestFd = d;
+            preyX = lsp.x;
+            preyY = lsp.y;
+          }
+        }
+        for (const npc of this.boothNpcs) {
+          if (!npc || !npc.active) continue;
+          const d = Math.hypot(npc.x - fx, npc.y - fy);
+          if (d < bestFd) {
+            bestFd = d;
+            preyX = npc.x;
+            preyY = npc.y;
+          }
+        }
+
+        let ftx;
+        let fty;
+        if (preyX != null) {
+          ftx = preyX;
+          fty = preyY;
+        } else {
+          if (now > fr.retargetAt) {
+            fr.retargetAt = now + 1800 + Math.random() * 1600;
+            this.pickFrogTarget(fr);
+          }
+          ftx = fr.target.x;
+          fty = fr.target.y;
+        }
+
+        let fdx = ftx - fx;
+        let fdy = fty - fy;
+        let flen = Math.hypot(fdx, fdy) || 1;
+        fx += (fdx / flen) * V_FROG * dt;
+        fy += (fdy / flen) * V_FROG * dt;
+        fp.setPosition(fx, fy);
+        fp.setRotation(Math.atan2(fdy, fdx) * 0.08);
+        fp.setFlipX(fdx < 0);
+        this.clampSpriteToPlaza(fp, true);
+        this.clampFrogToPoolShore(fp);
+        if (this.bounceIfNearFountain(fp, now)) {
+          fr.home.x = fp.x;
+          fr.home.y = fp.y;
+          this.pickFrogTarget(fr);
+          fr.retargetAt = now + 500;
+        }
+        this.clampSpriteToPlaza(fp, true);
+        this.clampFrogToPoolShore(fp);
+
+        if (now >= (fr.nextEatAt || 0)) {
+          let ate = false;
+          for (let mi = this.mice.length - 1; mi >= 0; mi--) {
+            const m = this.mice[mi];
+            if (Math.hypot(m.sprite.x - fp.x, m.sprite.y - fp.y) < FROG_EAT_DIST) {
+              m.sprite.destroy();
+              this.mice.splice(mi, 1);
+              ate = true;
+              break;
+            }
+          }
+          if (!ate) {
+            for (let ri = this.roaches.length - 1; ri >= 0; ri--) {
+              const ro = this.roaches[ri];
+              if (Math.hypot(ro.sprite.x - fp.x, ro.sprite.y - fp.y) < FROG_EAT_DIST) {
+                ro.sprite.destroy();
+                this.roaches.splice(ri, 1);
+                ate = true;
+                break;
+              }
+            }
+          }
+          if (!ate) {
+            for (let li = this.lizards.length - 1; li >= 0; li--) {
+              const lz = this.lizards[li];
+              if (this.arboreal && this.arboreal.liz === lz && !this.arboreal.lizardFled) continue;
+              const lsp = lz.sprite;
+              if (Math.hypot(lsp.x - fp.x, lsp.y - fp.y) < FROG_EAT_DIST) {
+                if (this.arboreal && this.arboreal.liz === lz) this.arboreal = null;
+                lsp.destroy();
+                this.lizards.splice(li, 1);
+                ate = true;
+                break;
+              }
+            }
+          }
+          if (!ate) {
+            for (let ni = this.boothNpcs.length - 1; ni >= 0; ni--) {
+              const npc = this.boothNpcs[ni];
+              if (!npc || !npc.active) continue;
+              if (Math.hypot(npc.x - fp.x, npc.y - fp.y) < FROG_EAT_DIST) {
+                const bi = this.booths.indexOf(npc);
+                if (bi >= 0) this.booths.splice(bi, 1);
+                npc.destroy();
+                this.boothNpcs.splice(ni, 1);
+                ate = true;
+                break;
+              }
+            }
+          }
+          if (ate) fr.nextEatAt = now + FROG_EAT_COOLDOWN_MS;
+        }
+      }
+
       if (!skipCatGround) {
         const chaseLiz = this.nearestLizardEntry(cat);
-        let lx = chaseLiz.sprite.x;
-        let ly = chaseLiz.sprite.y;
 
         let chaseMx = null;
         let chaseMy = null;
@@ -1767,14 +2779,14 @@ function initWorld() {
           vCat = 34;
         }
 
-        let tcx;
-        let tcy;
+        let tcx = cat.x;
+        let tcy = cat.y;
         if (chaseMouseSprite) {
           tcx = chaseMx;
           tcy = chaseMy;
-        } else {
-          tcx = lx;
-          tcy = ly;
+        } else if (chaseLiz) {
+          tcx = chaseLiz.sprite.x;
+          tcy = chaseLiz.sprite.y;
         }
 
         const cdx = tcx - cat.x;
@@ -1803,6 +2815,14 @@ function initWorld() {
             }
             this.catChaseMouse = null;
           }
+        } else if (chaseLiz) {
+          const lsp = chaseLiz.sprite;
+          if (Math.hypot(lsp.x - cat.x, lsp.y - cat.y) < MOUSE_CATCH) {
+            if (this.arboreal && this.arboreal.liz === chaseLiz) this.arboreal = null;
+            lsp.destroy();
+            const idx = this.lizards.indexOf(chaseLiz);
+            if (idx >= 0) this.lizards.splice(idx, 1);
+          }
         }
       }
 
@@ -1818,9 +2838,13 @@ function initWorld() {
       sceneRef = this;
       /* 核心广场尺寸（喷泉、路、分区）以 (0,0) 居中；外围再铺大地砖，缩到最小也不会露出背景色 */
       const TILE = 16;
-      const ZOOM_MIN = 0.42;
-      const plazaW = 80 * TILE;
-      const plazaH = 54 * TILE;
+      const ZOOM_MIN = 0.5;
+      /** 相对最初版广场的边长倍数（1.5 = 在原始尺寸上再扩大半倍） */
+      const PS = 1.5;
+      this.plazaScale = PS;
+      this.fountainTeleportRadius = 34 * PS;
+      const plazaW = 80 * TILE * PS;
+      const plazaH = 54 * TILE * PS;
       const hw = plazaW / 2;
       const hh = plazaH / 2;
 
@@ -1828,7 +2852,7 @@ function initWorld() {
       const gh = Math.max(1, this.scale.gameSize.height);
       const spanHalf =
         Math.max(
-          110 * TILE,
+          110 * TILE * PS,
           Math.ceil((Math.max(gw, gh) / ZOOM_MIN / 2) / TILE) * TILE + TILE,
         );
       const boundsHalfW = Math.max(hw + TILE * 2, spanHalf);
@@ -1883,18 +2907,19 @@ function initWorld() {
         g.fillStyle(0x5c5249, 0.8).fillRect(0, 0, 16, 3);
         g.fillStyle(0x4a403a, 0.6).fillRect(2, 6, 12, 2);
       });
-      // 喷泉：石缘 + 多层水色
-      makeTexture(this, "fountain", 40, 40, (g) => {
-        g.fillStyle(0x5c5249, 1).fillRect(0, 0, 40, 40);
-        g.fillStyle(0x6b5e54, 1).fillRect(2, 2, 36, 36);
+      // 喷泉石框（内池 24×24 透明，由 fountainWaterG 每帧绘制动态水）
+      makeTexture(this, "fountainMasonry", 40, 40, (g) => {
+        g.fillStyle(0x5c5249, 1);
+        g.fillRect(0, 0, 40, 8);
+        g.fillRect(0, 32, 40, 8);
+        g.fillRect(0, 8, 8, 24);
+        g.fillRect(32, 8, 8, 24);
+        g.fillStyle(0x6b5e54, 0.9);
+        g.fillRect(1, 1, 38, 3);
+        g.fillRect(1, 36, 38, 3);
+        g.fillRect(1, 8, 3, 24);
+        g.fillRect(36, 8, 3, 24);
         g.lineStyle(2, 0x3a332d, 1).strokeRect(4, 4, 32, 32);
-        g.fillStyle(0x4a90c8, 0.45).fillRect(8, 8, 24, 24);
-        g.fillStyle(0x5aa8d4, 0.65).fillRect(11, 11, 18, 18);
-        g.fillStyle(0x8ec8f0, 0.55).fillRect(14, 14, 12, 12);
-        g.fillStyle(0xe8f4fc, 0.65).fillRect(17, 10, 4, 4);
-        g.fillStyle(0xffffff, 0.45).fillRect(13, 16, 3, 3);
-        g.fillStyle(0xffffff, 0.35).fillRect(22, 18, 2, 2);
-        g.fillStyle(0xffffff, 0.28).fillRect(19, 22, 2, 2);
       });
       // 阔叶树
       makeTexture(this, "tree", 28, 36, (g) => {
@@ -2046,6 +3071,19 @@ function initWorld() {
         g.fillStyle(0x231c18, 1).fillRect(9, 4, 1, 1);
         g.fillStyle(0xc1666b, 0.85).fillRect(12, 5, 3, 2);
       });
+      makeTexture(this, "lizardEgg", 10, 12, (g) => {
+        g.fillStyle(0xe8dcc8, 1).fillCircle(5, 6, 5);
+        g.fillStyle(0xc9b89a, 1).fillCircle(5, 6, 3.5);
+        g.fillStyle(0x8b7355, 0.75).fillRect(3, 4, 1, 1);
+        g.fillRect(7, 7, 1, 1);
+        g.fillRect(4, 9, 1, 1);
+      });
+      // 水池小鱼：浅色底 + setTint 成多彩；flipX 表示游向
+      makeTexture(this, "pondFish", 16, 10, (g) => {
+        g.fillStyle(0xf5f5f5, 1).fillEllipse(8, 5, 10, 5);
+        g.fillStyle(0xe8e8e8, 1).fillTriangle(1, 5, 5, 2.5, 5, 7.5);
+        g.fillStyle(0x1a1816, 0.9).fillCircle(11.5, 4.8, 1.1);
+      });
       makeTexture(this, "mouse", 16, 10, (g) => {
         g.fillStyle(0x231c18, 1).fillRect(2, 4, 11, 5);
         g.fillStyle(0x9c8c82, 1).fillRect(3, 5, 9, 3);
@@ -2072,6 +3110,43 @@ function initWorld() {
         g.fillRect(2, 3, 3, 2);
         g.fillStyle(0x1a1816, 1).fillRect(22, 4, 1, 1);
       });
+      // 牛蛙（俯视）：四腿展开、亮腹 + 金眶眼，整体比猫小一圈
+      makeTexture(this, "frog", 28, 22, (g) => {
+        g.fillStyle(0x1a2820, 0.35).fillEllipse(14, 12, 22, 14);
+        // 后肢（粗壮）
+        g.fillStyle(0x2f4d3c, 1).fillEllipse(6, 15, 7, 5);
+        g.fillEllipse(22, 15, 7, 5);
+        g.fillStyle(0x3d6b52, 1).fillEllipse(6, 14.5, 5, 3.5);
+        g.fillEllipse(22, 14.5, 5, 3.5);
+        // 前肢
+        g.fillStyle(0x355d48, 1).fillEllipse(8, 11, 5, 4);
+        g.fillEllipse(20, 11, 5, 4);
+        g.fillStyle(0x4a8062, 1).fillEllipse(8, 10.5, 3.5, 2.8);
+        g.fillEllipse(20, 10.5, 3.5, 2.8);
+        // 躯干
+        g.fillStyle(0x3a6b52, 1).fillEllipse(14, 10, 16, 11);
+        g.fillStyle(0x4d8f6e, 1).fillEllipse(14, 9, 12, 8);
+        g.fillStyle(0x6ec498, 0.55).fillEllipse(14, 8.5, 9, 5);
+        g.fillStyle(0xa8e8c8, 0.35).fillEllipse(13, 7.5, 5, 3);
+        // 吻部三角
+        g.fillStyle(0x2d5444, 1).fillTriangle(14, 4, 10, 8, 18, 8);
+        g.fillStyle(0x4d8f6e, 1).fillTriangle(14, 4.5, 11, 7.5, 17, 7.5);
+        // 背斑
+        g.fillStyle(0x2a4034, 0.85).fillEllipse(10, 9, 2.2, 1.8);
+        g.fillEllipse(18, 9, 2.2, 1.8);
+        g.fillEllipse(14, 11.5, 2.5, 2);
+        // 金眶眼
+        g.fillStyle(0xc9a227, 1).fillCircle(10.5, 6.5, 2.8);
+        g.fillCircle(17.5, 6.5, 2.8);
+        g.fillStyle(0xf5e6a8, 0.9).fillCircle(10.5, 6.2, 1.6);
+        g.fillCircle(17.5, 6.2, 1.6);
+        g.fillStyle(0x1a1816, 1).fillCircle(10.6, 6.3, 1.1);
+        g.fillCircle(17.6, 6.3, 1.1);
+        g.fillStyle(0xffffff, 0.75).fillRect(11, 5.8, 1, 1);
+        g.fillRect(18, 5.8, 1, 1);
+        // 鼻线
+        g.fillStyle(0x1a2820, 0.6).fillRect(13.5, 5, 1, 2);
+      });
 
       const ground = this.add.graphics().setDepth(0);
       for (let y = -boundsHalfH; y < boundsHalfH; y += TILE) {
@@ -2093,33 +3168,33 @@ function initWorld() {
       /* —— 四象限主题色：面积 = 原矩形 ×2（边长 ×√2），内沿仍贴环岛路口 —— */
       const zoneTint = (cx, cy, w, h, color, a) =>
         this.add.rectangle(cx, cy, w, h, color, a).setDepth(1).setStrokeStyle(2, 0x231c18, 0.22);
-      const ztw = Math.round(400 * Math.SQRT2);
-      const zth = Math.round(240 * Math.SQRT2);
-      zoneTint(-283, -215, ztw, zth, 0x6b8cae, 0.11); // STRIP · 偏冷
-      zoneTint(283, -215, ztw, zth, 0xc1666b, 0.1); // AVATAR · 陶土
-      zoneTint(-283, 225, ztw, zth, 0x4a8f5c, 0.09); // ARENA · 绿
-      zoneTint(283, 225, ztw, zth, 0xd4963c, 0.11); // FORUM（自由发帖）· 金
+      const ztw = Math.round(400 * Math.SQRT2) * PS;
+      const zth = Math.round(240 * Math.SQRT2) * PS;
+      zoneTint(-283 * PS, -215 * PS, ztw, zth, 0x6b8cae, 0.11); // STRIP · 偏冷
+      zoneTint(283 * PS, -215 * PS, ztw, zth, 0xc1666b, 0.1); // AVATAR · 陶土
+      zoneTint(-283 * PS, 225 * PS, ztw, zth, 0x4a8f5c, 0.09); // ARENA · 绿
+      zoneTint(283 * PS, 225 * PS, ztw, zth, 0xd4963c, 0.11); // FORUM（自由发帖）· 金
 
       /* —— 十字主路 + 喷泉环岛感 —— */
       const roadAsp = 0x2c2622;
       const roadInner = 0x362f29;
-      const roadWMain = plazaW - 64;
-      const roadHBand = 76;
-      const roadVBand = 56;
+      const roadWMain = plazaW - 64 * PS;
+      const roadHBand = 76 * PS;
+      const roadVBand = 56 * PS;
       this.add.rectangle(0, 0, roadWMain, roadHBand, roadAsp, 0.94).setDepth(2);
-      this.add.rectangle(0, 0, roadVBand, plazaH - 120, roadAsp, 0.94).setDepth(2);
-      this.add.rectangle(0, 0, roadWMain - 10, roadHBand - 14, roadInner, 0.55).setDepth(2);
-      this.add.rectangle(0, 0, roadVBand - 12, plazaH - 150, roadInner, 0.5).setDepth(2);
+      this.add.rectangle(0, 0, roadVBand, plazaH - 120 * PS, roadAsp, 0.94).setDepth(2);
+      this.add.rectangle(0, 0, roadWMain - 10 * PS, roadHBand - 14 * PS, roadInner, 0.55).setDepth(2);
+      this.add.rectangle(0, 0, roadVBand - 12 * PS, plazaH - 150 * PS, roadInner, 0.5).setDepth(2);
 
       // 路口加深
-      this.add.rectangle(0, 0, roadVBand + 8, roadHBand + 8, 0x1e1a18, 0.35).setDepth(2);
+      this.add.rectangle(0, 0, roadVBand + 8 * PS, roadHBand + 8 * PS, 0x1e1a18, 0.35).setDepth(2);
 
       // 中央铺装圆（环喷泉）
       const plazaPad = this.add.graphics({ x: 0, y: 0 });
       plazaPad.fillStyle(0x6b5e54, 0.92);
-      plazaPad.fillCircle(0, 0, 72);
+      plazaPad.fillCircle(0, 0, 72 * PS);
       plazaPad.lineStyle(3, 0x231c18, 0.45);
-      plazaPad.strokeCircle(0, 0, 72);
+      plazaPad.strokeCircle(0, 0, 72 * PS);
       plazaPad.setDepth(3);
 
       // 碎石小径（通向四区）
@@ -2130,59 +3205,65 @@ function initWorld() {
         for (let t = -len / 2; t < len / 2; t += TILE) {
           const px = Math.cos(rad) * t;
           const py = Math.sin(rad) * t;
-          if (Math.hypot(px, py) < 52) continue;
+          if (Math.hypot(px, py) < 52 * PS) continue;
           this.add.image(px, py, "tilePath").setOrigin(0.5).setDepth(3).setRotation(rad);
         }
       };
-      pathRay(-90, Math.min(hh - 100, 268));
-      pathRay(90, Math.min(hh - 100, 268));
-      pathRay(0, Math.min(hw - 72, 380));
-      pathRay(180, Math.min(hw - 72, 380));
+      pathRay(-90, Math.min(hh - 100 * PS, 268 * PS));
+      pathRay(90, Math.min(hh - 100 * PS, 268 * PS));
+      pathRay(0, Math.min(hw - 72 * PS, 380 * PS));
+      pathRay(180, Math.min(hw - 72 * PS, 380 * PS));
 
       // 车道虚线（东西向）
-      for (let x = -roadWMain / 2 + 20; x < roadWMain / 2 - 20; x += 36) {
-        if (Math.abs(x) < 34) continue;
-        this.add.rectangle(x, 0, 14, 3, 0xd4b896, 0.82).setDepth(3);
+      for (let x = -roadWMain / 2 + 20 * PS; x < roadWMain / 2 - 20 * PS; x += 36 * PS) {
+        if (Math.abs(x) < 34 * PS) continue;
+        this.add.rectangle(x, 0, 14 * PS, 3 * PS, 0xd4b896, 0.82).setDepth(3);
       }
       // 南北向短虚线
-      for (let y = -plazaH / 2 + 80; y < plazaH / 2 - 80; y += 40) {
-        if (Math.abs(y) < 40) continue;
-        this.add.rectangle(0, y, 3, 12, 0xd4b896, 0.75).setDepth(3);
+      for (let y = -plazaH / 2 + 80 * PS; y < plazaH / 2 - 80 * PS; y += 40 * PS) {
+        if (Math.abs(y) < 40 * PS) continue;
+        this.add.rectangle(0, y, 3 * PS, 12 * PS, 0xd4b896, 0.75).setDepth(3);
       }
 
       // 斑马线（四个方向靠圆心）
       const zebra = (ox, oy, horizontal) => {
+        const st = 8 * PS;
         for (let i = -4; i <= 4; i++) {
-          if (horizontal) this.add.rectangle(ox + i * 8, oy, 4, 18, 0xefe6dc, 0.88).setDepth(3);
-          else this.add.rectangle(ox, oy + i * 8, 18, 4, 0xefe6dc, 0.88).setDepth(3);
+          if (horizontal) this.add.rectangle(ox + i * st, oy, 4 * PS, 18 * PS, 0xefe6dc, 0.88).setDepth(3);
+          else this.add.rectangle(ox, oy + i * st, 18 * PS, 4 * PS, 0xefe6dc, 0.88).setDepth(3);
         }
       };
-      zebra(-52, 0, true);
-      zebra(52, 0, true);
-      zebra(0, -52, false);
-      zebra(0, 52, false);
+      zebra(-52 * PS, 0, true);
+      zebra(52 * PS, 0, true);
+      zebra(0, -52 * PS, false);
+      zebra(0, 52 * PS, false);
 
-      // 井盖
+      // 井盖（坐标同步记入 manholes，供鼠蟑地下通道）
+      this.manholes = [];
       const manhole = (x, y) => {
-        const m = this.add.circle(x, y, 7, 0x1e1a18, 0.65).setDepth(3);
-        this.add.circle(x, y, 5, 0x2e2824, 0.85).setDepth(3);
+        this.manholes.push({ x, y });
+        const m = this.add.circle(x, y, 7 * PS, 0x1e1a18, 0.65).setDepth(3);
+        this.add.circle(x, y, 5 * PS, 0x2e2824, 0.85).setDepth(3);
         return m;
       };
-      manhole(-210, 22);
-      manhole(215, -18);
-      manhole(-120, -30);
-      manhole(95, 38);
+      manhole(-210 * PS, 22 * PS);
+      manhole(215 * PS, -18 * PS);
+      manhole(-120 * PS, -30 * PS);
+      manhole(95 * PS, 38 * PS);
 
       this.createPlazaZonePools();
+      this.initPondFish();
 
-      this.add.image(0, 0, "fountain").setOrigin(0.5).setDepth(5);
+      this.fountainWaterG = this.add.graphics().setDepth(5);
+      this.updateFountainWater(this.time.now);
+      this.add.image(0, 0, "fountainMasonry").setOrigin(0.5).setDepth(6);
 
       // 喷泉周水花（轻微动画）
       for (let i = 0; i < 6; i++) {
         const ang = (i / 6) * Math.PI * 2;
-        const r = 38 + (i % 2) * 4;
+        const r = (38 + (i % 2) * 4) * PS;
         const splash = this.add
-          .rectangle(Math.cos(ang) * r, Math.sin(ang) * r, 4, 3, 0xffffff, 0.35)
+          .rectangle(Math.cos(ang) * r, Math.sin(ang) * r, 4 * PS, 3 * PS, 0xffffff, 0.35)
           .setDepth(4)
           .setRotation(ang);
         this.tweens.add({
@@ -2208,40 +3289,40 @@ function initWorld() {
 
       // 沿路林带 + 四角密林
       const borderTrees = [
-        [-hw + 40, -120, "treePine", 1],
-        [-hw + 28, -40, "treeOak", 1.05],
-        [-hw + 52, 40, "tree", 0.95],
-        [-hw + 34, 118, "treeAutumn", 1],
-        [hw - 42, -128, "treeOak", 1],
-        [hw - 30, -48, "treePine", 1.08],
-        [hw - 48, 52, "tree", 1],
-        [hw - 36, 122, "treeAutumn", 0.98],
-        [-280, -hh + 50, "treePine", 1.1],
-        [12, -hh + 44, "treeOak", 1],
-        [-24, -hh + 36, "tree", 0.95],
-        [260, -hh + 48, "treePine", 1.05],
-        [-268, hh - 52, "tree", 1],
-        [8, hh - 46, "treeAutumn", 1.02],
-        [248, hh - 50, "treeOak", 1],
+        [-hw + 40 * PS, -120 * PS, "treePine", 1],
+        [-hw + 28 * PS, -40 * PS, "treeOak", 1.05],
+        [-hw + 52 * PS, 40 * PS, "tree", 0.95],
+        [-hw + 34 * PS, 118 * PS, "treeAutumn", 1],
+        [hw - 42 * PS, -128 * PS, "treeOak", 1],
+        [hw - 30 * PS, -48 * PS, "treePine", 1.08],
+        [hw - 48 * PS, 52 * PS, "tree", 1],
+        [hw - 36 * PS, 122 * PS, "treeAutumn", 0.98],
+        [-280 * PS, -hh + 50 * PS, "treePine", 1.1],
+        [12 * PS, -hh + 44 * PS, "treeOak", 1],
+        [-24 * PS, -hh + 36 * PS, "tree", 0.95],
+        [260 * PS, -hh + 48 * PS, "treePine", 1.05],
+        [-268 * PS, hh - 52 * PS, "tree", 1],
+        [8 * PS, hh - 46 * PS, "treeAutumn", 1.02],
+        [248 * PS, hh - 50 * PS, "treeOak", 1],
       ];
       for (const [x, y, k, s] of borderTrees) placeTree(x, y, k, s, (x + y) % 2 === 0);
 
       // 集群小树丛
       const clusters = [
-        [-320, -220, 1],
-        [300, -210, -1],
-        [-310, 210, 1],
-        [295, 218, -1],
-        [-130, -250, 1],
-        [125, -245, -1],
-        [-135, 252, 1],
-        [118, 248, -1],
+        [-320 * PS, -220 * PS, 1],
+        [300 * PS, -210 * PS, -1],
+        [-310 * PS, 210 * PS, 1],
+        [295 * PS, 218 * PS, -1],
+        [-130 * PS, -250 * PS, 1],
+        [125 * PS, -245 * PS, -1],
+        [-135 * PS, 252 * PS, 1],
+        [118 * PS, 248 * PS, -1],
       ];
       for (const [cx, cy, dir] of clusters) {
         placeTree(cx, cy, treeKeys[Math.abs(cx + cy) % 4], 0.92, dir < 0);
-        placeTree(cx + 18 * dir, cy + 10, "treePine", 0.85, dir > 0);
+        placeTree(cx + 18 * PS * dir, cy + 10 * PS, "treePine", 0.85, dir > 0);
         this.add
-          .image(cx - 14 * dir, cy - 8, "bush")
+          .image(cx - 14 * PS * dir, cy - 8 * PS, "bush")
           .setOrigin(0.5)
           .setScale(1.15)
           .setDepth(depthScenery);
@@ -2249,18 +3330,18 @@ function initWorld() {
 
       // 灌木与石块点缀（避开环岛）
       const scatter = [
-        [-85, -95, "bush"],
-        [92, -102, "bush"],
-        [-78, 88, "bush"],
-        [96, 92, "bush"],
-        [-40, -132, "rock"],
-        [48, 128, "rock"],
-        [188, -88, "rock"],
-        [-195, 72, "rock"],
-        [0, -118, "flowerbed"],
-        [-118, 0, "flowerbed"],
-        [120, 6, "flowerbed"],
-        [4, 118, "flowerbed"],
+        [-85 * PS, -95 * PS, "bush"],
+        [92 * PS, -102 * PS, "bush"],
+        [-78 * PS, 88 * PS, "bush"],
+        [96 * PS, 92 * PS, "bush"],
+        [-40 * PS, -132 * PS, "rock"],
+        [48 * PS, 128 * PS, "rock"],
+        [188 * PS, -88 * PS, "rock"],
+        [-195 * PS, 72 * PS, "rock"],
+        [0, -118 * PS, "flowerbed"],
+        [-118 * PS, 0, "flowerbed"],
+        [120 * PS, 6 * PS, "flowerbed"],
+        [4 * PS, 118 * PS, "flowerbed"],
       ];
       for (const [x, y, key] of scatter) {
         const im = this.add.image(x, y, key).setOrigin(0.5).setDepth(depthScenery);
@@ -2268,29 +3349,29 @@ function initWorld() {
       }
 
       // 绿篱围角（四区内侧）
-      const hedgeY = [-138, 138];
-      const hedgeX = [-175, 175];
+      const hedgeY = [-138 * PS, 138 * PS];
+      const hedgeX = [-175 * PS, 175 * PS];
       for (const hy of hedgeY) {
-        this.add.image(-285, hy, "hedge").setOrigin(0.5).setDepth(depthScenery);
-        this.add.image(285, hy, "hedge").setOrigin(0.5).setDepth(depthScenery).setFlipX(true);
+        this.add.image(-285 * PS, hy, "hedge").setOrigin(0.5).setDepth(depthScenery);
+        this.add.image(285 * PS, hy, "hedge").setOrigin(0.5).setDepth(depthScenery).setFlipX(true);
       }
       for (const hx of hedgeX) {
-        const h = this.add.image(hx, -218, "hedge").setOrigin(0.5).setDepth(depthScenery);
+        const h = this.add.image(hx, -218 * PS, "hedge").setOrigin(0.5).setDepth(depthScenery);
         h.setAngle(90);
-        const h2 = this.add.image(hx, 218, "hedge").setOrigin(0.5).setDepth(depthScenery);
+        const h2 = this.add.image(hx, 218 * PS, "hedge").setOrigin(0.5).setDepth(depthScenery);
         h2.setAngle(90);
       }
 
       // 长椅（沿路与广场边）
       const benches = [
-        [-95, 62, 0, false],
-        [88, -58, 0, true],
-        [-210, 12, Math.PI / 2, false],
-        [205, -8, Math.PI / 2, true],
-        [-48, -195, 0, false],
-        [40, 188, 0, true],
-        [155, 95, Math.PI / 2, false],
-        [-160, -105, Math.PI / 2, true],
+        [-95 * PS, 62 * PS, 0, false],
+        [88 * PS, -58 * PS, 0, true],
+        [-210 * PS, 12 * PS, Math.PI / 2, false],
+        [205 * PS, -8 * PS, Math.PI / 2, true],
+        [-48 * PS, -195 * PS, 0, false],
+        [40 * PS, 188 * PS, 0, true],
+        [155 * PS, 95 * PS, Math.PI / 2, false],
+        [-160 * PS, -105 * PS, Math.PI / 2, true],
       ];
       for (const [bx, by, ang, flip] of benches) {
         const b = this.add
@@ -2303,33 +3384,33 @@ function initWorld() {
 
       // 路灯：沿路网格 + 四向加密
       let lampPhase = 0;
-      const lampRowY = [-38, 38];
+      const lampRowY = [-38 * PS, 38 * PS];
       for (const ly of lampRowY) {
-        for (let lx = -hw + 100; lx < hw - 60; lx += 130) {
-          if (Math.abs(lx) < 70) continue;
+        for (let lx = -hw + 100 * PS; lx < hw - 60 * PS; lx += 130 * PS) {
+          if (Math.abs(lx) < 70 * PS) continue;
           this.addLampWithGlow(lx, ly, depthScenery + 0.5, lampPhase);
           lampPhase += 110;
         }
       }
-      for (let ly = -hh + 90; ly < hh - 70; ly += 140) {
-        if (Math.abs(ly) < 55) continue;
-        this.addLampWithGlow(-48, ly, depthScenery + 0.5, lampPhase);
+      for (let ly = -hh + 90 * PS; ly < hh - 70 * PS; ly += 140 * PS) {
+        if (Math.abs(ly) < 55 * PS) continue;
+        this.addLampWithGlow(-48 * PS, ly, depthScenery + 0.5, lampPhase);
         lampPhase += 80;
-        this.addLampWithGlow(48, ly, depthScenery + 0.5, lampPhase);
+        this.addLampWithGlow(48 * PS, ly, depthScenery + 0.5, lampPhase);
         lampPhase += 80;
       }
       // 内环四盏
-      this.addLampWithGlow(-62, -62, depthScenery + 0.5, 40);
-      this.addLampWithGlow(62, -62, depthScenery + 0.5, 200);
-      this.addLampWithGlow(-62, 62, depthScenery + 0.5, 320);
-      this.addLampWithGlow(62, 62, depthScenery + 0.5, 480);
+      this.addLampWithGlow(-62 * PS, -62 * PS, depthScenery + 0.5, 40);
+      this.addLampWithGlow(62 * PS, -62 * PS, depthScenery + 0.5, 200);
+      this.addLampWithGlow(-62 * PS, 62 * PS, depthScenery + 0.5, 320);
+      this.addLampWithGlow(62 * PS, 62 * PS, depthScenery + 0.5, 480);
 
       // 指示牌
       const signs = [
-        [-298, -22, "PIXEL"],
-        [288, -22, "AVATAR"],
-        [-298, 22, "ARENA"],
-        [288, 22, "FORUM"],
+        [-298 * PS, -22 * PS, "PIXEL"],
+        [288 * PS, -22 * PS, "AVATAR"],
+        [-298 * PS, 22 * PS, "ARENA"],
+        [288 * PS, 22 * PS, "FORUM"],
       ];
       signs.forEach(([sx, sy, txt]) => {
         this.add.image(sx, sy, "signboard").setOrigin(0.5).setDepth(depthScenery + 1);
@@ -2343,13 +3424,13 @@ function initWorld() {
           .setDepth(depthScenery + 2);
       });
 
-      this.cat = this.add.image(-118, 88, "cat").setOrigin(0.5).setDepth(15).setScale(1.18);
+      this.cat = this.add.image(-118 * PS, 88 * PS, "cat").setOrigin(0.5).setDepth(15).setScale(1.18);
       const lizardSpawns = [
-        [-72, 82],
-        [-58, 94],
-        [-90, 72],
-        [-48, 68],
-        [-82, 100],
+        [-72 * PS, 82 * PS],
+        [-58 * PS, 94 * PS],
+        [-90 * PS, 72 * PS],
+        [-48 * PS, 68 * PS],
+        [-82 * PS, 100 * PS],
       ];
       this.lizards = [];
       for (let i = 0; i < lizardSpawns.length; i++) {
@@ -2363,17 +3444,18 @@ function initWorld() {
         this.lizards.push(lz);
         this.pickLizardTarget(lz);
       }
+      this._nextLizardEggLayAt = this.time.now + 4000;
 
       /* 首次远离猫（约 -118,88），生在东西向干道东侧 */
       const mouseSpawns = [
-        [168, 82],
-        [198, 96],
-        [142, 108],
-        [218, 74],
-        [182, 70],
-        [230, 90],
-        [155, 118],
-        [205, 65],
+        [168 * PS, 82 * PS],
+        [198 * PS, 96 * PS],
+        [142 * PS, 108 * PS],
+        [218 * PS, 74 * PS],
+        [182 * PS, 70 * PS],
+        [230 * PS, 90 * PS],
+        [155 * PS, 118 * PS],
+        [205 * PS, 65 * PS],
       ];
       for (const [mx, my] of mouseSpawns) {
         const mm = this.createMouseAt(mx, my);
@@ -2385,9 +3467,9 @@ function initWorld() {
       this.roaches = [];
       for (let ri = 0; ri < 15; ri++) {
         const ang = (ri / 15) * Math.PI * 2 + 0.2;
-        const rad = 95 + (ri % 4) * 34;
-        const rx = Math.cos(ang) * rad + ((ri * 17) % 40);
-        const ry = Math.sin(ang) * rad + ((ri * 11) % 36);
+        const rad = (95 + (ri % 4) * 34) * PS;
+        const rx = Math.cos(ang) * rad + ((ri * 17) % 40) * PS;
+        const ry = Math.sin(ang) * rad + ((ri * 11) % 36) * PS;
         const rc = this.clampPosToPlaza(rx, ry);
         const ro = this.createRoachAt(rc.x, rc.y);
         ro.retargetAt = this.time.now + ri * 90;
@@ -2398,9 +3480,9 @@ function initWorld() {
 
       this.snakes = [];
       const snakeSpawns = [
-        { x: -38, y: -118, tint: 0xffd54f },
-        { x: 52, y: 132, tint: 0xa1887f },
-        { x: 175, y: -42, tint: 0x66bb6a },
+        { x: -38 * PS, y: -118 * PS, tint: 0xffd54f },
+        { x: 52 * PS, y: 132 * PS, tint: 0xa1887f },
+        { x: 175 * PS, y: -42 * PS, tint: 0x66bb6a },
       ];
       snakeSpawns.forEach((cfg, si) => {
         const c = this.clampPosToPlaza(cfg.x, cfg.y);
@@ -2409,6 +3491,17 @@ function initWorld() {
         this.pickSnakeTarget(snk);
         this.snakes.push(snk);
       });
+
+      this.frogs = [];
+      const nFrogs = Math.min(4, this.plazaPools.length || 0);
+      for (let fi = 0; fi < nFrogs; fi++) {
+        const pool = this.plazaPools[fi % this.plazaPools.length];
+        const p0 = this.randomPointInsidePlazaPool(pool);
+        const fr = this.createFrogAt(p0.x, p0.y);
+        fr.retargetAt = this.time.now + fi * 240;
+        this.pickFrogTarget(fr);
+        this.frogs.push(fr);
+      }
 
       // Zone titles sit above plaza tiles / trees (6) but below booths (7+) so stalls are never covered.
       const depthZoneTitle = 6.4;
@@ -2422,10 +3515,10 @@ function initWorld() {
             padding: { x: 8, y: 5 },
           })
           .setDepth(depthZoneTitle);
-      mkLabel(-312, -292, "STRIP ST", "#b8d4e8");
-      mkLabel(300, -292, "AVATAR ST", "#f0b8bc");
-      mkLabel(-312, 302, "ARENA ST", "#b8e0c4");
-      mkLabel(300, 302, "FORUM ST", "#ffe3a8");
+      mkLabel(-312 * PS, -292 * PS, "STRIP ST", "#b8d4e8");
+      mkLabel(300 * PS, -292 * PS, "AVATAR ST", "#f0b8bc");
+      mkLabel(-312 * PS, 302 * PS, "ARENA ST", "#b8e0c4");
+      mkLabel(300 * PS, 302 * PS, "FORUM ST", "#ffe3a8");
 
       this.input.on("wheel", (_pointer, _go, _dx, dy) => {
         const c = this.cameras.main;
@@ -2452,12 +3545,13 @@ function initWorld() {
       const postItems = posts || [];
       const matchItems = matches || [];
       const zf = zoneFilter || "all";
+      const PS = this.plazaScale || 1;
 
       const zones = {
-        strip: { x0: -498, y0: -302, cols: 4, dx: 94, dy: 66 },
-        avatar: { x0: 120, y0: -302, cols: 4, dx: 94, dy: 66 },
-        match: { x0: -498, y0: 186, cols: 4, dx: 94, dy: 66 },
-        forum: { x0: 120, y0: 186, cols: 4, dx: 94, dy: 66 },
+        strip: { x0: -498 * PS, y0: -302 * PS, cols: 4, dx: 94 * PS, dy: 66 * PS },
+        avatar: { x0: 120 * PS, y0: -302 * PS, cols: 4, dx: 94 * PS, dy: 66 * PS },
+        match: { x0: -498 * PS, y0: 186 * PS, cols: 4, dx: 94 * PS, dy: 66 * PS },
+        forum: { x0: 120 * PS, y0: 186 * PS, cols: 4, dx: 94 * PS, dy: 66 * PS },
       };
       const idx = { strip: 0, avatar: 0, match: 0, forum: 0 };
       const stallTex = {
@@ -2476,11 +3570,11 @@ function initWorld() {
         stall.on("pointerout", () => stall.clearTint());
 
         let npc;
-        const npcY = y + 10;
+        const npcY = y + 10 * PS;
         if (z === "match") {
-          npc = this.add.image(x - 16, npcY, "goStones").setOrigin(0.5).setDepth(8);
+          npc = this.add.image(x - 16 * PS, npcY, "goStones").setOrigin(0.5).setDepth(8);
         } else {
-          npc = this.add.image(x - 18, npcY, "shrimp").setOrigin(0.5).setDepth(8);
+          npc = this.add.image(x - 18 * PS, npcY, "shrimp").setOrigin(0.5).setDepth(8);
           if (z === "avatar") npc.setTint(0xffb8c6);
           else if (z === "forum") npc.setTint(0xffe8a0);
         }
@@ -2495,12 +3589,12 @@ function initWorld() {
         this.boothNpcs.push(npc);
 
         const bubble = this.add
-          .text(x, y - 30, label, {
+          .text(x, y - 30 * PS, label, {
             fontFamily: '"ZCOOL KuaiLe","Microsoft YaHei",sans-serif',
-            fontSize: "12px",
+            fontSize: `${Math.max(12, Math.round(12 * PS))}px`,
             color: "#fef9f3",
             backgroundColor: "rgba(35,28,24,0.75)",
-            padding: { x: 8, y: 5 },
+            padding: { x: Math.round(8 * PS), y: Math.round(5 * PS) },
           })
           .setOrigin(0.5, 1)
           .setDepth(9);
@@ -2516,7 +3610,7 @@ function initWorld() {
         const i = idx[z]++;
         const col = i % zc.cols;
         const row = Math.floor(i / zc.cols);
-        const x = zc.x0 + col * zc.dx + (row % 2) * 8;
+        const x = zc.x0 + col * zc.dx + (row % 2) * 8 * PS;
         const y = zc.y0 + row * zc.dy;
 
         const rawTitle = p.title || "（无标题）";
@@ -2531,7 +3625,7 @@ function initWorld() {
         const i = idx.match++;
         const col = i % zc.cols;
         const row = Math.floor(i / zc.cols);
-        const x = zc.x0 + col * zc.dx + (row % 2) * 8;
+        const x = zc.x0 + col * zc.dx + (row % 2) * 8 * PS;
         const y = zc.y0 + row * zc.dy;
 
         const line = `${matchRuleLabel(m.rule)}·${matchStatusZh(m.status)}`;
