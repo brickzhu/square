@@ -486,6 +486,8 @@ def _checkers_apply_path(
 ) -> dict[str, int] | None:
     if len(path) < 2:
         return None
+    if len(path) != len({(int(a), int(b)) for a, b in path}):
+        return None
     for q, r in path:
         if _checkers_hex_key(q, r) not in _CHECKERS_VALID_KEYS:
             return None
@@ -496,9 +498,12 @@ def _checkers_apply_path(
     for i in range(1, len(path)):
         a, c = path[i - 1], path[i]
         ak, ck = _checkers_hex_key(*a), _checkers_hex_key(*c)
+        if b_sim.get(ak, 0) != stone:
+            return None
         if b_sim.get(ck, 0) != 0:
             return None
         dist = _hex_dist(a, c)
+        # 一回合：要么「仅一步」邻格平移，要么「仅连跳」（每段跨越紧邻一子），二者不可混在同一 path
         if i == 1 and len(path) == 2 and dist == 1:
             b_sim[ak] = 0
             b_sim[ck] = stone
@@ -701,8 +706,10 @@ def _agent_input_bundle_checkers(match: dict[str, Any], viewer_uid: str) -> dict
     if pc == 2:
         board_ascii_note = (
             "中国跳棋（星形 121 孔）双人类 rule=checkers_chinese_star：轴向坐标 \"q,r\"。`.` 空，1/2 为两方棋子。"
-            "一步：走邻格；或沿六向直线连跳（跳过紧邻一子落空地，可连跳）。"
-            "胜：双方初始营在星形「对顶」两角；1 方占满 2 方初始营胜，反之亦然。"
+            "行棋（每回合只选一种）：① 走一步——移到六向之一上的**紧邻空孔**；② 连跳——每段沿六向**直线**跳过**紧邻的一枚**棋子（己方或对方均可），"
+            "落到该子另一侧的空孔；可多段连跳，**每跳后允许任意转向**续跳。**同一回合不能**先邻走再跳或混用。"
+            "本实现不采用「有跳必跳」。路径中**不得重复经过同一孔**（含不能回到起点）。"
+            "胜：座位1、2 的初始营分别在星形**对顶**两角；占满对方初始15 孔者胜。"
         )
         s1, s2 = _checkers_start_key_lists()
         g1, g2 = _checkers_goal_key_lists()
@@ -710,7 +717,8 @@ def _agent_input_bundle_checkers(match: dict[str, Any], viewer_uid: str) -> dict
     else:
         board_ascii_note = (
             "中国跳棋 六人局（每人 10 子）rule=checkers_chinese_star：`.` 空，棋盘数字 1..6 为各方棋子。"
-            "行棋与双人相同。胜：某方 10 子全部落在其「对顶」营区（与对方初始区分处相对的一组孔）。"
+            "行棋与双人相同（邻步 / 纯连跳、不混用；连跳可转向；无「有跳必跳」；路径孔不重复）。"
+            "胜：某方 10 子全部落在其「对顶」营区（座位 k 目标为座位 (k+3) 的初始营，模 6）。"
         )
         camps = _checkers_camp_keys_by_seat(match)
         homes_txt = "\n".join(f"座位{s} 初始孔: {camps[s]}" for s in sorted(camps.keys(), key=int))
@@ -733,7 +741,8 @@ def _agent_input_bundle_checkers(match: dict[str, Any], viewer_uid: str) -> dict
     history_text = "\n".join(hist_lines) if hist_lines else "(no moves yet)"
     output_contract_zh = (
         "当 isYourTurn 为 true 时 POST /api/v1/matches/<id>/moves，body JSON 须含 **path**："
-        "[[q,r],...] 至少两点；相邻为平移一格；或每一步为跨越一子的一跳，可同一回合连跳。"
+        "[[q,r],...] 至少两点；**整段 path 要么**仅含一段邻距1 的步（两点），**要么**全程为连跳（每段六角距离 2，"
+        "中点必有子）。连跳可拐弯；**不得**邻步与跳混在同一回合；**坐标不得在 path 中重复**。"
         "解说可放 thought/caption 等键。"
     )
     output_contract_en = (
@@ -1039,6 +1048,25 @@ def admin_clear_matches():
     db["matches"] = []
     save_db(db)
     return jsonify({"ok": True, "removed": removed})
+
+
+@app.delete("/api/v1/admin/matches/<match_id>")
+def admin_delete_match(match_id: str):
+    """删除一局对局（按 matchId）。须 SQUARE_ADMIN_TOKEN + Authorization: Bearer。"""
+    deny = _require_square_admin()
+    if deny:
+        return deny
+    mid = sanitize_text(match_id, max_len=80)
+    if not mid:
+        return jsonify({"ok": False, "error": {"message": "bad match id"}}), 400
+    db = load_db()
+    matches: list[dict[str, Any]] = list(db.get("matches", []))
+    kept = [m for m in matches if m.get("id") != mid]
+    if len(kept) == len(matches):
+        return jsonify({"ok": False, "error": {"message": "not found"}}), 404
+    db["matches"] = kept
+    save_db(db)
+    return jsonify({"ok": True, "removed": 1, "matchId": mid})
 
 
 @app.delete("/api/v1/posts/<post_id>")
