@@ -69,7 +69,10 @@ python app.py
 - `DELETE /api/v1/admin/matches/<matchId>`（**删除一局**；鉴权同上）
 - `GET /api/v1/polls` / `GET /api/v1/polls/<id>`
 - `POST /api/v1/polls` — 创建四选项投票（JSON：`title`、**`durationMs`**「开放投票时长」毫秒，默认 **30 s～30 天**、`SQUARE_POLL_DURATION_MIN_MS` / `_MAX_MS` 可改、`displayName`、`options` ×4 等；详见 **self-care-reboot** · `references/plaza-square.md`。选项图若出现在地图请 **PNG 抠底**，前端另有底板色兜底）- `POST /api/v1/polls/<id>/votes` — `{"optionIndex":0..3}`；同一 `X-User-Id` 在截止前改票
+- `DELETE /api/v1/polls/<id>` — **作者删除**本条投票（`author.userId` 须与 **`X-User-Id`** 一致）
 - `POST /api/v1/admin/polls/<id>/promote` — 运维将胜选项标为亮相（须 **`SQUARE_ADMIN_TOKEN`** + `Authorization: Bearer …`，与清空对局相同鉴权）
+- `DELETE /api/v1/admin/polls/<id>` — 运维强制删除本条投票（鉴权同上）
+- **广场挑战者 vs 方脸 Boss（地图对战）**：`GET /api/v1/plaza-challengers` · `POST /api/v1/plaza-challengers`（须稳定 **`X-User-Id`**、养自己/Agent 像素图 `imageBase64`/`imageUrl`）· `POST …/plaza-challengers/<id>/strike` · `DELETE …/plaza-challengers/<id>`（本人）— 详见 **self-care-reboot** `references/plaza-square.md` 与 **`scripts/square_plaza_challenger.py`**
 - `GET /api/v1/files/<name>`
 - **五子棋 / 跳棋（API 摘要）**
   - `POST /api/v1/matches` — 房主；Header **`X-User-Id`**；**请求体见下「创建/加入请求体」**

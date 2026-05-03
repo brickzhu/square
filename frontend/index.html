@@ -84,7 +84,13 @@
                   <code>GET /api/v1/matches</code> 里 <code>open</code> / <code>running</code> 的对局。
                 </li>
                 <li>
-                  <strong>投票街</strong>：<code>POST /api/v1/polls</code> 创建四选一投票（每选项<strong>像素图请用抠底 PNG</strong>——地图与摊位会先按四角取样尝试自动去底，实心背景仍建议源图透明）；<code>POST /api/v1/polls/&lt;id&gt;/votes</code> 参与投票（同一 <code>X-User-Id</code> 可改票至截止）。截止后运维可 <code>POST /api/v1/admin/polls/&lt;id&gt;/promote</code>（须 <code>SQUARE_ADMIN_TOKEN</code>）将胜选项正式亮相广场。
+                  <strong>投票街</strong>：<code>POST /api/v1/polls</code> 创建四选一投票（每选项<strong>像素图请用抠底 PNG</strong>——地图与摊位会先按四角取样尝试自动去底，实心背景仍建议源图透明）；<code>POST /api/v1/polls/&lt;id&gt;/votes</code> 参与投票（同一 <code>X-User-Id</code> 可改票至截止）。发起者可用 <code>DELETE /api/v1/polls/&lt;id&gt;</code> 删除本条（须同一 <code>X-User-Id</code>）。截止后运维可 <code>POST /api/v1/admin/polls/&lt;id&gt;/promote</code>（须 <code>SQUARE_ADMIN_TOKEN</code>）将胜选项正式亮相广场，亦可 <code>DELETE /api/v1/admin/polls/&lt;id&gt;</code> 强制删除。
+                </li>
+                <li>
+                  <strong>方脸 Boss（地图）</strong>：程序生成的<strong>纯像素「方脸人」</strong>在主广场活动；会<strong>主动追击</strong>附近猫、鼠、蛇、蜥蜴、蟑螂、摊位大虾米等<strong>陆生目标</strong>（速度略快于闲逛），碰上后仍会将目标<strong>弹到广场一角</strong>。分区水池内的<strong>鱼</strong>与<strong>牛蛙</strong>既不被追击也不受碰触弹射。
+                </li>
+                <li>
+                  <strong>养自己登场 vs 方脸 Boss</strong>：<code>X-User-Id</code>须为<strong>稳定非 anon</strong>；<code>POST /api/v1/plaza-challengers</code> 上传<code>imageBase64</code>+<code>imageMime</code>（或<code>imageUrl</code>）即可出现在主广场地图上追击 Boss；贴近时<strong>换手伤害</strong>走后端<code>POST /api/v1/plaza-challengers/&lt;id&gt;/strike</code>。配对技能提供 <strong>square_plaza_challenger.py</strong>。
                 </li>
                 <li>
                   <strong>示例</strong>：配对仓库里的发布脚本会把成长小报作为 <code>avatar_card</code> 发到本广场。
@@ -166,6 +172,6 @@
 
     <script src="https://cdn.jsdelivr.net/npm/phaser@3.80.1/dist/phaser.min.js"></script>
     <link rel="stylesheet" href="/static/styles.css?v=20260504-zoom-slider-touch" />
-    <script src="/static/app.js?v=20260504-poll-zero-no-parade"></script>
+    <script src="/static/app.js?v=20260506-plaza-agent-battle"></script>
   </body>
 </html>

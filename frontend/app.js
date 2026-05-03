@@ -77,6 +77,10 @@ function isMyPost(p) {
   return !!(p && p.author && p.author.userId === getSquareUserId());
 }
 
+function isMyPoll(pl) {
+  return !!(pl && pl.author && pl.author.userId === getSquareUserId());
+}
+
 /**
  * 已在广场挂了观战页的玩法在此登记；新 rule 仅会出现占位文案与 API 说明，直到补上 page。
  */
@@ -381,6 +385,25 @@ function renderPollCard(pl) {
       : "投票已截止，地图旁展示当前胜选项";
   meta.appendChild(el("div", "meta__hint", hint));
 
+  const actions = el("div", "actions");
+  if (isMyPoll(pl)) {
+    const delBtn = el("button", "btn btn--danger", "删除");
+    delBtn.type = "button";
+    delBtn.onclick = async (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      if (!confirm("确定删除这条投票？所有票数会一并清空。")) return;
+      try {
+        await api(`/api/v1/polls/${encodeURIComponent(pl.id)}`, { method: "DELETE" });
+        await refresh();
+      } catch (e) {
+        alert(e?.message || String(e));
+      }
+    };
+    actions.appendChild(delBtn);
+    meta.appendChild(actions);
+  }
+
   root.appendChild(thumb);
   root.appendChild(meta);
   return root;
@@ -418,6 +441,21 @@ async function loadFeed({ append = false } = {}) {
   else {
     /* 加载更多帖子时不重复追加全量投票列表 */
     feedPollsBuffer = pollsBuf;
+  }
+
+  try {
+    const chd = await api("/api/v1/plaza-challengers");
+    if (worldState && chd) {
+      worldState.plazaChallengers = Array.isArray(chd.items) ? chd.items : [];
+      const h = Number(chd.plazaBossHp);
+      const mx = Number(chd.plazaBossMaxHp);
+      worldState.plazaBossHp = Number.isFinite(h) ? h : worldState.plazaBossHp ?? 10;
+      worldState.plazaBossMaxHp = Number.isFinite(mx)
+        ? mx
+        : worldState.plazaBossMaxHp ?? Math.max(worldState.plazaBossHp ?? 10, 1);
+    }
+  } catch {
+    /* 广场离线时忽略挑战者列表 */
   }
 
   if (worldState) {
@@ -592,6 +630,26 @@ async function openPollDrawer(pl) {
     ),
   );
 
+  if (isMyPoll(item)) {
+    const row = el("div", "drawer__actions");
+    const delBtn = el("button", "btn btn--danger", "删除投票");
+    delBtn.type = "button";
+    delBtn.onclick = async () => {
+      if (!confirm("确定删除这条投票？所有票数会一并清空。")) return;
+      try {
+        await api(`/api/v1/polls/${encodeURIComponent(item.id)}`, { method: "DELETE" });
+        document.getElementById("drawer").classList.add("hidden");
+        selectedPollId = null;
+        setDrawerMode("post");
+        await refresh();
+      } catch (e) {
+        alert(e?.message || String(e));
+      }
+    };
+    row.appendChild(delBtn);
+    panel.appendChild(row);
+  }
+
   focusDrawerInRail();
 }
 
@@ -665,6 +723,15 @@ function getSquarePixelRatio() {
   return Math.max(1, Math.min(2.25, dpr));
 }
 
+/** 广场上挑战者名字条兜底截断（纯展示） */
+function sanitizePlazaShortName(raw) {
+  const s = String(raw ?? "Agent")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 48);
+  return s.length > 10 ? `${s.slice(0, 10)}…` : s || "Agent";
+}
+
 function initWorld() {
   const container = document.getElementById("world");
   container.innerHTML = "";
@@ -673,6 +740,9 @@ function initWorld() {
     posts: [],
     matches: [],
     polls: [],
+    plazaChallengers: [],
+    plazaBossHp: 10,
+    plazaBossMaxHp: 10,
     stallZoneFilter: "all",
     setPosts(items) {
       this.posts = items || [];
@@ -732,6 +802,7 @@ function initWorld() {
   const ROACH_MANHOLE_PANIC_LIZARD = 54;
   const ROACH_MANHOLE_PANIC_SNAKE = 50;
   const ROACH_MANHOLE_PANIC_FROG = 92;
+
 
   function makeTexture(scene, key, w, h, painter) {
     const g = scene.make.graphics({ x: 0, y: 0, add: false });
@@ -910,6 +981,493 @@ function initWorld() {
       this._nextCatFishAt = 0;
       /** 井盖世界坐标（与 create 里 manhole 圆心一致），供鼠蟑传送与寻路 */
       this.manholes = [];
+      /** 「方脸人」Boss：程序绘制纯像素小人，在广场游走弹飞陆生动物（鱼、牛蛙免疫）；可与 Agent 挑战者换血 */
+      this.fangBoss = null;
+      /** Boss 头顶 HP 文案 */
+      this.fangBossHpLabel = null;
+      /** Agent 挑战者：`id` → `{ sprite, label, hp, maxHp, lastStrikeAttemptMs }` */
+      this.plazaChallengerMap = new Map();
+    }
+
+    destroyFangBoss() {
+      try {
+        this.fangBossHpLabel?.destroy();
+      } catch {
+        /* noop */
+      }
+      this.fangBossHpLabel = null;
+      try {
+        this.fangBoss?.sprite?.destroy();
+      } catch {
+        /* noop */
+      }
+      this.fangBoss = null;
+    }
+
+    clearPlazaChallengerSprites() {
+      for (const o of this.plazaChallengerMap.values()) {
+        try {
+          o.sprite?.destroy();
+        } catch {
+          /* noop */
+        }
+        try {
+          o.label?.destroy();
+        } catch {
+          /* noop */
+        }
+      }
+      this.plazaChallengerMap.clear();
+    }
+
+    _fangBossHpLabelString() {
+      const mx = Math.max(1, Number(state.plazaBossMaxHp) || 10);
+      const h = Math.max(0, Math.min(mx, Number(state.plazaBossHp)));
+      return `Boss ${h}/${mx}`;
+    }
+
+    /**
+     * Boss 弹射落点：**广场四角**一带随机抖动，且与Boss当前位置直线距离 ≥ minDist；
+     * 再推离景观水池。
+     */
+    randomPlazaCornerFlingPoint(fromX, fromY, minDist) {
+      const p = this.plazaWalkBounds;
+      if (!p) return this.clampPosToPlaza(fromX, fromY);
+      const ps = this.plazaScale || 1;
+      const corners = [
+        { x: p.minX, y: p.minY },
+        { x: p.maxX, y: p.minY },
+        { x: p.minX, y: p.maxY },
+        { x: p.maxX, y: p.maxY },
+      ];
+      const spreadX = Math.max(ps * 6, (p.maxX - p.minX) * 0.12);
+      const spreadY = Math.max(ps * 6, (p.maxY - p.minY) * 0.12);
+      for (let attempt = 0; attempt < 36; attempt++) {
+        const c = corners[Math.floor(Math.random() * corners.length)];
+        const jx = c.x + (Math.random() * 2 - 1) * spreadX;
+        const jy = c.y + (Math.random() * 2 - 1) * spreadY;
+        const q = this.clampPosToPlaza(jx, jy);
+        if (Math.hypot(q.x - fromX, q.y - fromY) >= minDist) {
+          const out = this.pushOutOfPlazaPools(q.x, q.y, 14 * ps);
+          return out;
+        }
+      }
+      const fb = this.randomPlazaWalkPointAvoidingPools();
+      if (!fb) return this.clampPosToPlaza(fromX, fromY);
+      const out = this.pushOutOfPlazaPools(fb.x, fb.y, 14 * ps);
+      return Math.hypot(out.x - fromX, out.y - fromY) >= minDist
+        ? out
+        : this.clampPosToPlaza(fromX - minDist * 0.85, fromY - minDist * 0.15);
+    }
+
+    ensureFangBoss() {
+      if (!this.textures.exists("fangBossPlaza")) return;
+      const PS = this.plazaScale || 1;
+      if (this.fangBoss?.sprite?.active) {
+        if (!this.fangBossHpLabel?.active) {
+          this.fangBossHpLabel?.destroy?.();
+          this.fangBossHpLabel = null;
+          const sp = this.fangBoss.sprite;
+          this.fangBossHpLabel = this.add
+            .text(sp.x, sp.y - 44 * PS, this._fangBossHpLabelString(), {
+              fontFamily: '"ZCOOL KuaiLe","Microsoft YaHei",sans-serif',
+              fontSize: `${Math.max(9, Math.round(9 * PS))}px`,
+              color: "#fff5e8",
+              backgroundColor: "rgba(28,22,18,0.74)",
+              padding: { x: 5, y: 3 },
+            })
+            .setOrigin(0.5, 1)
+            .setDepth(17.95);
+        }
+        return;
+      }
+
+      this.destroyFangBoss();
+      const spawnAt = this.randomPlazaWalkPointAvoidingPools() || { x: 0, y: 0 };
+      const p0 = this.clampPosToPlaza(spawnAt.x, spawnAt.y);
+      const sp = this.add
+        .image(p0.x, p0.y, "fangBossPlaza")
+        .setOrigin(0.5, 0.92)
+        .setDepth(17.25)
+        .setDisplaySize(40 * PS, 48 * PS);
+      const nowMs = this.time.now;
+      this.fangBoss = {
+        sprite: sp,
+        target: { x: p0.x, y: p0.y },
+        retargetAt: nowMs + 400,
+        ready: true,
+      };
+      this.fangBossHpLabel = this.add
+        .text(p0.x, p0.y - 44 * PS, this._fangBossHpLabelString(), {
+          fontFamily: '"ZCOOL KuaiLe","Microsoft YaHei",sans-serif',
+          fontSize: `${Math.max(9, Math.round(9 * PS))}px`,
+          color: "#fff5e8",
+          backgroundColor: "rgba(28,22,18,0.74)",
+          padding: { x: 5, y: 3 },
+        })
+        .setOrigin(0.5, 1)
+        .setDepth(17.95);
+    }
+
+    /**
+     * 方脸 Boss 可追击的目标（水陆）：**不包含**池中鱼、`pondFish`、牛蛙；
+     * 与人类侧「碰触后弹飞」集合一致。
+     */
+    findNearestFangBossPrey(bx, by, maxDist, now) {
+      /** @type {{ x: number, y: number } | null} */
+      let chBest = null;
+      let chBestD = maxDist;
+      for (const o of this.plazaChallengerMap.values()) {
+        const sp = o.sprite;
+        if (!sp?.active) continue;
+        const d = Math.hypot(sp.x - bx, sp.y - by);
+        if (d < chBestD) {
+          chBestD = d;
+          chBest = { x: sp.x, y: sp.y };
+        }
+      }
+      if (chBest) return chBest;
+
+      let best = null;
+      let bestD = maxDist;
+
+      const consider = (sx, sy) => {
+        const d = Math.hypot(sx - bx, sy - by);
+        if (d < bestD) {
+          bestD = d;
+          best = { x: sx, y: sy };
+        }
+      };
+
+      if (
+        this.cat &&
+        !(
+          this.arboreal?.catJoined &&
+          this.arboreal.catDownAt != null &&
+          now < this.arboreal.catDownAt
+        )
+      ) {
+        consider(this.cat.x, this.cat.y);
+      }
+      for (const m of this.mice || []) {
+        if (m?.sprite?.active) consider(m.sprite.x, m.sprite.y);
+      }
+      for (const lz of this.lizards || []) {
+        if (this.arboreal && this.arboreal.liz === lz && !this.arboreal.lizardFled) continue;
+        const sp = lz?.sprite;
+        if (sp?.active) consider(sp.x, sp.y);
+      }
+      for (const snk of this.snakes || []) {
+        const sp = snk?.sprite;
+        if (sp?.active) consider(sp.x, sp.y);
+      }
+      for (const ro of this.roaches || []) {
+        const sp = ro?.sprite;
+        if (sp?.active) consider(sp.x, sp.y);
+      }
+      for (const npc of this.boothNpcs || []) {
+        if (npc?.active) consider(npc.x, npc.y);
+      }
+
+      return best;
+    }
+
+    updateFangBoss(now, dt) {
+      const fb = this.fangBoss;
+      if (!fb?.ready || !fb.sprite?.active) return;
+
+      const ps = this.plazaScale || 1;
+      const chaseAgro = 248 * ps;
+      let x = fb.sprite.x;
+      let y = fb.sprite.y;
+
+      const prey = this.findNearestFangBossPrey(x, y, chaseAgro, now);
+      const chasing = !!prey;
+      if (prey) {
+        fb.target.x = prey.x;
+        fb.target.y = prey.y;
+        fb.retargetAt = now + 600 + Math.random() * 400;
+      } else if (now > fb.retargetAt) {
+        fb.retargetAt = now + 1100 + Math.random() * 1900;
+        const pt = this.randomPlazaWalkPointAvoidingPools();
+        if (pt) {
+          fb.target.x = pt.x;
+          fb.target.y = pt.y;
+        }
+      }
+
+      const tx = fb.target.x - x;
+      const ty = fb.target.y - y;
+      const len = Math.hypot(tx, ty) || 1;
+      const v = chasing ? 54 * ps * dt : 38 * ps * dt;
+      const step = Math.min(v, len);
+      x += (tx / len) * step;
+      y += (ty / len) * step;
+      fb.sprite.setPosition(x, y);
+      if (Math.abs(tx) > 0.35) fb.sprite.setFlipX(tx < 0);
+      this.clampSpriteToPlaza(fb.sprite);
+      if (this.bounceIfNearFountain(fb.sprite, now)) {
+        fb.target.x = fb.sprite.x;
+        fb.target.y = fb.sprite.y;
+        fb.retargetAt = now + 380;
+      }
+      this.clampSpriteToPlaza(fb.sprite);
+      if (this.fangBossHpLabel?.active) {
+        this.fangBossHpLabel.setText(this._fangBossHpLabelString());
+        this.fangBossHpLabel.setPosition(fb.sprite.x, fb.sprite.y - 44 * ps);
+      }
+    }
+
+    syncPlazaChallengersFromFeed(items, boothGen) {
+      const list = items || [];
+      const wanted = new Set(list.map((x) => x.id));
+      for (const id of [...this.plazaChallengerMap.keys()]) {
+        if (!wanted.has(id)) {
+          const o = this.plazaChallengerMap.get(id);
+          try {
+            o?.sprite?.destroy();
+          } catch {
+            /* noop */
+          }
+          try {
+            o?.label?.destroy();
+          } catch {
+            /* noop */
+          }
+          this.plazaChallengerMap.delete(id);
+        }
+      }
+
+      const PS = this.plazaScale || 1;
+      const scene = this;
+
+      for (const it of list) {
+        if (!it?.id || !it.imageUrl) continue;
+        if (this.plazaChallengerMap.has(it.id)) {
+          const o = this.plazaChallengerMap.get(it.id);
+          o.hp = Number(it.hp) || 0;
+          o.maxHp = Math.max(1, Number(it.maxHp) || 8);
+          if (o.label?.active) {
+            o.label.setText(
+              `${sanitizePlazaShortName(it.displayName)} · ♥${o.hp}/${o.maxHp}`,
+            );
+          }
+          continue;
+        }
+
+        const pid = String(it.id).replace(/[^a-zA-Z0-9_]/g, "_");
+        const k = `pch_${pid}`;
+        const kRaw = `${k}_raw`;
+        let abs;
+        try {
+          abs = new URL(it.imageUrl, window.location.origin).href;
+        } catch {
+          abs = it.imageUrl;
+        }
+
+        /** @type {{ x: number, y: number }} */
+        const spawnPt = this.clampPosToPlaza(
+          (Math.random() - 0.5) * 140 * PS,
+          (Math.random() - 0.5) * 140 * PS,
+        );
+
+        const mount = (showKey) => {
+          if (scene._boothGen !== boothGen) return;
+          if (!scene.textures.exists(showKey)) return;
+          if (scene.plazaChallengerMap.has(it.id)) return;
+          const sp = scene.add
+            .image(spawnPt.x, spawnPt.y, showKey)
+            .setOrigin(0.5, 0.92)
+            .setDepth(17.42)
+            .setDisplaySize(38 * PS, 45 * PS);
+          const cid = String(it.id);
+          sp.fangChallengerId = cid;
+
+          const lab = scene.add
+            .text(
+              spawnPt.x,
+              spawnPt.y - 50 * PS,
+              `${sanitizePlazaShortName(it.displayName)} · ♥${Number(it.hp) || 0}/${Math.max(
+                1,
+                Number(it.maxHp) || 8,
+              )}`,
+              {
+                fontFamily: '"ZCOOL KuaiLe","Microsoft YaHei",sans-serif',
+                fontSize: `${Math.max(9, Math.round(9 * PS))}px`,
+                color: "#fef9f3",
+                backgroundColor: "rgba(28,22,18,0.74)",
+                padding: { x: 4, y: 2 },
+              },
+            )
+            .setOrigin(0.5, 1)
+            .setDepth(17.45);
+
+          scene.plazaChallengerMap.set(it.id, {
+            sprite: sp,
+            label: lab,
+            hp: Number(it.hp) || 0,
+            maxHp: Math.max(1, Number(it.maxHp) || 8),
+            lastStrikeAttemptMs: 0,
+          });
+        };
+
+        if (scene.textures.exists(k)) {
+          mount(k);
+          continue;
+        }
+
+        scene.load.once(Phaser.Loader.Events.COMPLETE, () => {
+          if (scene._boothGen !== boothGen) return;
+          if (!scene.textures.exists(kRaw)) return;
+          const showKey = plazaKnockOutFlatBackdrop(scene, kRaw, k) ? k : kRaw;
+          if (!scene.textures.exists(showKey)) return;
+          if (showKey === k) {
+            try {
+              scene.textures.remove(kRaw);
+            } catch {
+              /* noop */
+            }
+          }
+          mount(showKey);
+        });
+        scene.load.image(kRaw, abs);
+        scene.load.start();
+      }
+    }
+
+    async requestPlazaChallengerStrike(cid) {
+      try {
+        const j = await api(`/api/v1/plaza-challengers/${encodeURIComponent(cid)}/strike`, {
+          method: "POST",
+          body: "{}",
+        });
+        if (!j?.ok) return;
+        if (typeof j.plazaBossHp === "number" && Number.isFinite(j.plazaBossHp)) {
+          state.plazaBossHp = j.plazaBossHp;
+        }
+        if (j.bossReset && this.cameras?.main?.flash) {
+          this.cameras.main.flash(200, 62, 48, 42, false);
+        }
+
+        const o = this.plazaChallengerMap.get(cid);
+        if (j.eliminatedChallenger && o) {
+          try {
+            o.sprite.destroy();
+          } catch {
+            /* noop */
+          }
+          try {
+            o.label.destroy();
+          } catch {
+            /* noop */
+          }
+          this.plazaChallengerMap.delete(cid);
+          return;
+        }
+        if (j.item && o?.label?.active) {
+          o.hp = Number(j.item.hp) || o.hp;
+          o.maxHp = Math.max(1, Number(j.item.maxHp) || o.maxHp);
+          o.label.setText(
+            `${sanitizePlazaShortName(j.item.displayName)} · ♥${o.hp}/${o.maxHp}`,
+          );
+        }
+      } catch {
+        /* noop */
+      }
+    }
+
+    updatePlazaChallengersBattle(now, dt) {
+      const fb = this.fangBoss;
+      if (!fb?.ready || !fb.sprite?.active) return;
+      const ps = this.plazaScale || 1;
+      const bx = fb.sprite.x;
+      const by = fb.sprite.y;
+      const clashR = 42 * ps;
+      const spd = 52 * ps * dt;
+
+      for (const [cid, o] of this.plazaChallengerMap.entries()) {
+        const sp = o.sprite;
+        if (!sp?.active) continue;
+
+        let x = sp.x;
+        let y = sp.y;
+        const tx = bx - x;
+        const ty = by - y;
+        const len = Math.hypot(tx, ty) || 1;
+        const step = Math.min(spd, len);
+        x += (tx / len) * step;
+        y += (ty / len) * step;
+        sp.setPosition(x, y);
+        if (Math.abs(tx) > 0.35) sp.setFlipX(tx < 0);
+        this.clampSpriteToPlaza(sp);
+        void this.bounceIfNearFountain(sp, now);
+        this.clampSpriteToPlaza(sp);
+
+        if (o.label?.active) {
+          o.label.setPosition(sp.x, sp.y - 50 * ps);
+        }
+
+        const d = Math.hypot(sp.x - bx, sp.y - by);
+        if (d < clashR) {
+          if (now - (o.lastStrikeAttemptMs || 0) > 900) {
+            o.lastStrikeAttemptMs = now;
+            void this.requestPlazaChallengerStrike(cid);
+          }
+        }
+      }
+    }
+
+    /**
+     * Boss 碰触陆生小动物 → 弹射到广场一角（距Boss ≥minDist）。
+     * 免疫：**分区水池内的鱼**（pondFish）、**牛蛙**；**不参与**与挑战者的换血格斗。
+     */
+    applyFangBossCollisions(now) {
+      const fb = this.fangBoss;
+      if (!fb?.ready || !fb.sprite?.active) return;
+
+      const ps = this.plazaScale || 1;
+      const hitR = 30 * ps;
+      const minDist = Math.max(10, 10 * ps);
+      const immuneMs = 520;
+      const bx = fb.sprite.x;
+      const by = fb.sprite.y;
+
+      /** @param {Phaser.GameObjects.Image | null | undefined} sp @param {{x:number,y:number}} home */
+      const tryFlingSprite = (sp, home, allowPools = false) => {
+        if (!sp?.active) return;
+        if (sp.fangChallengerId) return;
+        if (typeof sp.fangImmuneUntil === "number" && now < sp.fangImmuneUntil) return;
+        const d = Math.hypot(sp.x - bx, sp.y - by);
+        if (d >= hitR) return;
+        const dest = this.randomPlazaCornerFlingPoint(bx, by, minDist);
+        sp.setPosition(dest.x, dest.y);
+        this.clampSpriteToPlaza(sp, allowPools);
+        if (home) {
+          home.x = dest.x;
+          home.y = dest.y;
+        }
+        sp.fangImmuneUntil = now + immuneMs;
+      };
+
+      if (
+        this.cat &&
+        !(
+          this.arboreal?.catJoined &&
+          this.arboreal.catDownAt != null &&
+          now < this.arboreal.catDownAt
+        )
+      ) {
+        tryFlingSprite(this.cat, null, false);
+      }
+
+      for (const m of this.mice || []) tryFlingSprite(m.sprite, m.home, false);
+      for (const lz of this.lizards || []) {
+        if (this.arboreal && this.arboreal.liz === lz && !this.arboreal.lizardFled) continue;
+        tryFlingSprite(lz.sprite, lz.home, false);
+      }
+      for (const snk of this.snakes || []) tryFlingSprite(snk.sprite, snk.home, false);
+      for (const ro of this.roaches || []) tryFlingSprite(ro.sprite, ro.home, false);
+      for (const npc of this.boothNpcs || []) tryFlingSprite(npc, null, false);
     }
 
     nearestManholeTo(x, y) {
@@ -2235,6 +2793,8 @@ function initWorld() {
       this.updatePlazaPoolFlow(now);
       this.updateFountainWater(now);
       this.updatePondFish(now, dt);
+      this.updateFangBoss(now, dt);
+      this.updatePlazaChallengersBattle(now, dt);
       const cat = this.cat;
       if (!cat) return;
 
@@ -3090,6 +3650,8 @@ function initWorld() {
         }
       }
 
+      this.applyFangBossCollisions(now);
+
       for (const npc of this.boothNpcs) {
         if (npc && npc.active) {
           this.bounceIfNearFountain(npc, now);
@@ -3337,6 +3899,49 @@ function initWorld() {
         g.fillStyle(0x231c18, 1).fillRect(4, 7, 1, 1);
         g.fillRect(7, 7, 1, 1);
         g.fillStyle(0xd6a84f, 1).fillRect(18, 10, 4, 2);
+      });
+      /** 方脸人 Boss：仅存角色像素，无外框底板、星星、标题、成长条（与投票素材无关） */
+      makeTexture(this, "fangBossPlaza", 44, 56, (g) => {
+        const hair = 0x3d3028;
+        const line = 0x231c18;
+        const skin = 0xf3c4b4;
+        const skinDeep = 0xe8aa9d;
+        const shirt = 0xa8cfe0;
+        const accent = 0xf4a900;
+        const pants = 0x4f5a62;
+
+        /* 顶发 — 不显星星、无标题底板 */
+        g.fillStyle(hair, 1).fillRect(9, 4, 26, 7);
+        g.fillStyle(line, 1).fillRect(9, 3, 26, 1);
+
+        /* 方脸轮廓：宽略大于高的矩形脸 */
+        g.fillRect(7, 10, 30, 27);
+        g.fillStyle(skin, 1).fillRect(9, 12, 26, 23);
+
+        /* 五官 */
+        g.fillStyle(line, 1).fillRect(14, 19, 3, 3);
+        g.fillRect(25, 19, 3, 3);
+        g.fillStyle(skinDeep, 1).fillRect(12, 24, 3, 2);
+        g.fillRect(27, 24, 3, 2);
+        g.fillStyle(line, 1).fillRect(17, 28, 8, 2);
+
+        /* 颈与肩 */
+        g.fillStyle(skin, 1).fillRect(18, 35, 6, 3);
+        g.fillStyle(shirt, 1).fillRect(11, 38, 22, 12);
+        g.fillStyle(accent, 1).fillRect(11, 38, 22, 2);
+        /* 衣袖 */
+        g.fillStyle(shirt, 1).fillRect(7, 42, 5, 6);
+        g.fillRect(32, 42, 5, 6);
+        g.fillStyle(line, 1).fillRect(7, 41, 5, 1);
+        g.fillRect(32, 41, 5, 1);
+
+        /* 裤与鞋 — 无任何「成长」条 */
+        g.fillStyle(pants, 1).fillRect(13, 48, 6, 6);
+        g.fillRect(25, 48, 6, 6);
+        g.fillStyle(line, 1).fillRect(12, 47, 8, 1);
+        g.fillRect(24, 47, 8, 1);
+        g.fillStyle(0x1a1612, 1).fillRect(12, 52, 8, 2);
+        g.fillRect(24, 52, 8, 2);
       });
       // 小蜥蜴（在猫巡逻带附近溜达，被追时会加速甩开）
       makeTexture(this, "lizard", 16, 10, (g) => {
@@ -4174,6 +4779,9 @@ function initWorld() {
           openMatchDrawer(m);
         });
       }
+
+      this.ensureFangBoss();
+      this.syncPlazaChallengersFromFeed(state.plazaChallengers || [], boothGen);
     }
   }
 

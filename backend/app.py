@@ -62,6 +62,12 @@ MATCH_TURN_WARN_MS = int(os.environ.get("SQUARE_MATCH_TURN_WARN_MS", str(60 * 10
 POLL_DURATION_MIN_MS = int(os.environ.get("SQUARE_POLL_DURATION_MIN_MS", str(30_000)))
 POLL_DURATION_MAX_MS = int(os.environ.get("SQUARE_POLL_DURATION_MAX_MS", str(30 * 24 * 3600 * 1000)))
 
+PLAZA_CHALLENGER_TTL_MS = int(os.environ.get("SQUARE_PLAZA_CHALLENGER_TTL_MS", str(25 * 60 * 1000)))
+MAX_PLAZA_CHALLENGERS = int(os.environ.get("SQUARE_PLAZA_CHALLENGER_MAX", "12"))
+PLAZA_STRIKE_MIN_INTERVAL_MS = int(os.environ.get("SQUARE_PLAZA_STRIKE_MIN_MS", "780"))
+DEFAULT_PLAZA_CHALLENGER_HP = int(os.environ.get("SQUARE_PLAZA_CHALLENGER_HP", "8"))
+DEFAULT_PLAZA_BOSS_HP = int(os.environ.get("SQUARE_PLAZA_BOSS_HP", "10"))
+
 
 def load_db() -> dict[str, Any]:
     defaults: dict[str, Any] = {
@@ -71,6 +77,8 @@ def load_db() -> dict[str, Any]:
         "bans": [],
         "matches": [],
         "polls": [],
+        "plaza_challengers": [],
+        "plaza_boss_battle": {"hp": DEFAULT_PLAZA_BOSS_HP, "maxHp": DEFAULT_PLAZA_BOSS_HP},
     }
     if not DB_PATH.exists():
         return {**defaults}
@@ -118,6 +126,75 @@ def sanitize_text(s: str, *, max_len: int = 200) -> str:
     if len(s) > max_len:
         s = s[:max_len]
     return s
+
+
+def _prune_plaza_challengers(db: dict[str, Any]) -> None:
+    """移除过期或 HP≤0 的广场挑战者，并限制条数上限。"""
+    now = now_ms()
+    chs_out: list[dict[str, Any]] = []
+    for c in db.get("plaza_challengers") or []:
+        if not isinstance(c, dict):
+            continue
+        try:
+            hp = int(c.get("hp") or 0)
+        except (TypeError, ValueError):
+            hp = 0
+        if hp <= 0:
+            continue
+        if int(c.get("expiresAtMs") or 0) <= now:
+            continue
+        chs_out.append(c)
+    db["plaza_challengers"] = chs_out[:MAX_PLAZA_CHALLENGERS]
+
+
+def _ensure_plaza_boss_state(db: dict[str, Any]) -> dict[str, Any]:
+    bb = db.setdefault(
+        "plaza_boss_battle",
+        {"hp": DEFAULT_PLAZA_BOSS_HP, "maxHp": DEFAULT_PLAZA_BOSS_HP},
+    )
+    if not isinstance(bb, dict):
+        bb = {"hp": DEFAULT_PLAZA_BOSS_HP, "maxHp": DEFAULT_PLAZA_BOSS_HP}
+        db["plaza_boss_battle"] = bb
+    mx = int(bb.get("maxHp") or DEFAULT_PLAZA_BOSS_HP)
+    mx = max(1, min(99, mx))
+    bb["maxHp"] = mx
+    try:
+        h = int(bb.get("hp"))
+    except (TypeError, ValueError):
+        h = mx
+    if h <= 0:
+        h = mx
+    elif h > mx:
+        h = mx
+    bb["hp"] = h
+    return bb
+
+
+def _find_plaza_challenger(db: dict[str, Any], cid: str) -> dict[str, Any] | None:
+    for c in db.get("plaza_challengers") or []:
+        if isinstance(c, dict) and c.get("id") == cid:
+            return c
+    return None
+
+
+def _public_plaza_challenger(ch: dict[str, Any], viewer_uid: str) -> dict[str, Any]:
+    mx = max(1, min(30, int(ch.get("maxHp") or DEFAULT_PLAZA_CHALLENGER_HP)))
+    try:
+        hp = int(ch.get("hp"))
+    except (TypeError, ValueError):
+        hp = 0
+    hp = max(0, min(mx, hp))
+    return {
+        "id": ch["id"],
+        "displayName": ch.get("displayName", ""),
+        "imageUrl": ch.get("imageUrl", ""),
+        "hp": hp,
+        "maxHp": mx,
+        "createdAtMs": ch.get("createdAtMs"),
+        "expiresAtMs": ch.get("expiresAtMs"),
+        "source": ch.get("source", ""),
+        "mine": str(ch.get("ownerUserId")) == str(viewer_uid),
+    }
 
 
 _THOUGHT_LIKE_KEYS: tuple[str, ...] = (
@@ -1788,6 +1865,226 @@ def admin_promote_poll(poll_id: str):
     poll["promotedOptionIndex"] = winner
     save_db(db)
     return jsonify({"ok": True, "item": _poll_to_public(poll, get_client_user_id())})
+
+
+@app.delete("/api/v1/polls/<poll_id>")
+def delete_poll(poll_id: str):
+    """删除投票；仅创建者与当前 **X-User-Id**（`poll.author.userId`）一致时可删。"""
+    db = load_db()
+    uid = get_client_user_id()
+    pid = sanitize_text(poll_id, max_len=80)
+    if not pid:
+        return jsonify({"ok": False, "error": {"message": "bad poll id"}}), 400
+    polls: list[dict[str, Any]] = list(db.get("polls", []))
+    poll = next((p for p in polls if p.get("id") == pid), None)
+    if not poll:
+        return jsonify({"ok": False, "error": {"message": "not found"}}), 404
+    author_uid = (poll.get("author") or {}).get("userId")
+    if str(author_uid) != str(uid):
+        return jsonify({"ok": False, "error": {"message": "forbidden"}}), 403
+
+    db["polls"] = [p for p in polls if p.get("id") != pid]
+    save_db(db)
+    return jsonify({"ok": True})
+
+
+@app.delete("/api/v1/admin/polls/<poll_id>")
+def admin_delete_poll(poll_id: str):
+    """删除任意投票（运维）。须 **SQUARE_ADMIN_TOKEN** + `Authorization: Bearer …`。"""
+    deny = _require_square_admin()
+    if deny:
+        return deny
+    db = load_db()
+    pid = sanitize_text(poll_id, max_len=80)
+    if not pid:
+        return jsonify({"ok": False, "error": {"message": "bad poll id"}}), 400
+    polls: list[dict[str, Any]] = list(db.get("polls", []))
+    kept = [p for p in polls if p.get("id") != pid]
+    if len(kept) == len(polls):
+        return jsonify({"ok": False, "error": {"message": "not found"}}), 404
+    db["polls"] = kept
+    save_db(db)
+    return jsonify({"ok": True, "removed": 1, "pollId": pid})
+
+
+@app.post("/api/v1/plaza-challengers")
+def create_plaza_challenger():
+    """Agent（养自己像素形象等）登记为广场挑战者与方脸 Boss 对战。须非匿名 **X-User-Id**。"""
+    db = load_db()
+    _prune_plaza_challengers(db)
+    body = request.get_json(force=True, silent=False) or {}
+
+    uid = get_client_user_id()
+    if not uid or uid == "anon":
+        return (
+            jsonify(
+                {
+                    "ok": False,
+                    "error": {"message": "stable X-User-Id required for plaza challenger (not anon)"},
+                }
+            ),
+            400,
+        )
+
+    dn = sanitize_text(body.get("displayName", "养自己 Agent"), max_len=20)
+    src = sanitize_text(str(body.get("source", "")), max_len=48)
+    image_url = sanitize_text(body.get("imageUrl", ""), max_len=500)
+    if not image_url:
+        image_url = _save_inline_image(body)
+    if not image_url:
+        return (
+            jsonify(
+                {
+                    "ok": False,
+                    "error": {"message": "needs imageUrl or imageBase64 + imageMime"},
+                }
+            ),
+            400,
+        )
+
+    try:
+        mx_hp = int(body.get("maxHp") or DEFAULT_PLAZA_CHALLENGER_HP)
+    except (TypeError, ValueError):
+        mx_hp = DEFAULT_PLAZA_CHALLENGER_HP
+    mx_hp = max(3, min(20, mx_hp))
+
+    chs: list[dict[str, Any]] = [
+        c for c in (db.get("plaza_challengers") or []) if isinstance(c, dict) and str(c.get("ownerUserId")) != str(uid)
+    ]
+    if len(chs) >= MAX_PLAZA_CHALLENGERS:
+        return jsonify({"ok": False, "error": {"message": "plaza challengers limit reached"}}), 400
+
+    now = now_ms()
+    row: dict[str, Any] = {
+        "id": new_id("pch"),
+        "ownerUserId": uid,
+        "displayName": dn or "Agent",
+        "imageUrl": image_url,
+        "source": src or "agent",
+        "hp": mx_hp,
+        "maxHp": mx_hp,
+        "createdAtMs": now,
+        "expiresAtMs": now + PLAZA_CHALLENGER_TTL_MS,
+        "lastStrikeMs": 0,
+    }
+    chs.append(row)
+    db["plaza_challengers"] = chs
+    boss = _ensure_plaza_boss_state(db)
+    save_db(db)
+    return jsonify(
+        {
+            "ok": True,
+            "item": _public_plaza_challenger(row, uid),
+            "plazaBossHp": int(boss["hp"]),
+            "plazaBossMaxHp": int(boss["maxHp"]),
+        }
+    )
+
+
+@app.get("/api/v1/plaza-challengers")
+def list_plaza_challengers():
+    db = load_db()
+    _prune_plaza_challengers(db)
+    boss = _ensure_plaza_boss_state(db)
+    save_db(db)
+    uid = get_client_user_id()
+    items = [
+        _public_plaza_challenger(c, uid) for c in (db.get("plaza_challengers") or []) if isinstance(c, dict)
+    ]
+    return jsonify(
+        {
+            "ok": True,
+            "items": items,
+            "plazaBossHp": int(boss["hp"]),
+            "plazaBossMaxHp": int(boss["maxHp"]),
+        }
+    )
+
+
+@app.post("/api/v1/plaza-challengers/<ch_id>/strike")
+def plaza_challenger_strike(ch_id: str):
+    """与 Boss 换一次手：双方各扣 1 HP；间隔过短返回 skipped。Boss HP 归零时当场回满。"""
+    cid = sanitize_text(ch_id, max_len=80)
+    if not cid:
+        return jsonify({"ok": False, "error": {"message": "bad challenger id"}}), 400
+
+    db = load_db()
+    _prune_plaza_challengers(db)
+    ch = _find_plaza_challenger(db, cid)
+    if not ch:
+        return jsonify({"ok": False, "error": {"message": "not found"}}), 404
+
+    now = now_ms()
+    if now >= int(ch.get("expiresAtMs") or 0):
+        db["plaza_challengers"] = [c for c in (db.get("plaza_challengers") or []) if c.get("id") != cid]
+        save_db(db)
+        return jsonify({"ok": False, "error": {"message": "expired"}}), 410
+
+    last = int(ch.get("lastStrikeMs") or 0)
+    if now - last < PLAZA_STRIKE_MIN_INTERVAL_MS:
+        boss = _ensure_plaza_boss_state(db)
+        save_db(db)
+        return jsonify(
+            {
+                "ok": True,
+                "skipped": True,
+                "item": _public_plaza_challenger(ch, get_client_user_id()),
+                "plazaBossHp": int(boss["hp"]),
+                "bossReset": False,
+            }
+        )
+
+    boss = _ensure_plaza_boss_state(db)
+    ch["hp"] = max(0, int(ch["hp"]) - 1)
+    boss["hp"] = max(0, int(boss["hp"]) - 1)
+    ch["lastStrikeMs"] = now
+
+    boss_reset = False
+    if int(boss["hp"]) <= 0:
+        boss["hp"] = int(boss.get("maxHp") or DEFAULT_PLAZA_BOSS_HP)
+        boss_reset = True
+
+    removed = False
+    if int(ch["hp"]) <= 0:
+        db["plaza_challengers"] = [
+            c for c in (db.get("plaza_challengers") or []) if isinstance(c, dict) and c.get("id") != cid
+        ]
+        removed = True
+
+    save_db(db)
+    pub: dict[str, Any] | None = None
+    if not removed:
+        ch2 = _find_plaza_challenger(db, cid)
+        pub = _public_plaza_challenger(ch2 if ch2 else ch, get_client_user_id())
+    boss = _ensure_plaza_boss_state(db)
+    return jsonify(
+        {
+            "ok": True,
+            "exchanged": True,
+            "eliminatedChallenger": removed,
+            "item": pub,
+            "plazaBossHp": int(boss["hp"]),
+            "bossReset": boss_reset,
+        }
+    )
+
+
+@app.delete("/api/v1/plaza-challengers/<ch_id>")
+def delete_plaza_challenger(ch_id: str):
+    """挑战者本人放弃登场。"""
+    cid = sanitize_text(ch_id, max_len=80)
+    uid = get_client_user_id()
+    db = load_db()
+    ch = _find_plaza_challenger(db, cid)
+    if not ch:
+        return jsonify({"ok": False, "error": {"message": "not found"}}), 404
+    if str(ch.get("ownerUserId")) != str(uid):
+        return jsonify({"ok": False, "error": {"message": "forbidden"}}), 403
+    db["plaza_challengers"] = [
+        c for c in (db.get("plaza_challengers") or []) if isinstance(c, dict) and c.get("id") != cid
+    ]
+    save_db(db)
+    return jsonify({"ok": True})
 
 
 @app.get("/static/<path:filename>")
