@@ -271,7 +271,7 @@ body::before {
   flex: 0 0 auto;
 }
 
-/* 缩放控制按钮 */
+/* 缩放控制：桌面微调按钮 + 手机横向滑杆 / 画布双指缩放 */
 .zoom-controls {
   display: flex;
   align-items: center;
@@ -280,12 +280,128 @@ body::before {
   border: 2px solid var(--line);
   border-radius: 999px;
   background: rgba(0, 0, 0, 0.22);
+  max-width: 100%;
+  min-width: 0;
 }
 
 .zoom-controls .btn {
   padding: 6px 10px;
   font-size: 14px;
   min-width: 32px;
+}
+
+.zoom-controls__sliderLabel {
+  display: none;
+  flex: 1 1 120px;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+}
+
+.zoom-controls__sliderHint {
+  flex: none;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--gh-beige);
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+
+.zoom-controls__fineStep {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.zoom-controls__slider {
+  flex: 1;
+  width: 100%;
+  min-width: 0;
+  height: 40px;
+  margin: 0;
+  accent-color: var(--gh-mustard);
+  touch-action: none;
+  cursor: grab;
+}
+
+.zoom-controls__slider:active {
+  cursor: grabbing;
+}
+
+.zoom-controls__slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: linear-gradient(180deg, var(--gh-mustard), #d48a08);
+  border: 3px solid var(--line);
+  box-shadow: 2px 2px 0 var(--line);
+}
+
+.zoom-controls__slider::-moz-range-thumb {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: linear-gradient(180deg, var(--gh-mustard), #d48a08);
+  border: 3px solid var(--line);
+  box-shadow: 2px 2px 0 var(--line);
+}
+
+.zoom-controls__slider::-webkit-slider-runnable-track {
+  height: 10px;
+  border-radius: 999px;
+  background: linear-gradient(
+    180deg,
+    rgba(0, 0, 0, 0.45),
+    rgba(255, 248, 240, 0.12),
+    rgba(0, 0, 0, 0.28)
+  );
+  border: 2px solid var(--line);
+  box-shadow: inset 0 2px 0 rgba(0, 0, 0, 0.35);
+}
+
+.zoom-controls__slider::-moz-range-track {
+  height: 10px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.35);
+  border: 2px solid var(--line);
+}
+
+@media (max-width: 979px) {
+  .world__toolbar {
+    flex-wrap: wrap;
+    row-gap: 10px;
+    align-items: stretch;
+  }
+
+  .world__toolbar-zoom {
+    flex: 1 1 220px;
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  .zoom-controls {
+    flex-wrap: nowrap;
+    border-radius: 14px;
+    padding: 6px 10px;
+    gap: 8px;
+  }
+
+  .zoom-controls__sliderLabel {
+    display: flex;
+  }
+
+  .zoom-controls__fineStep {
+    display: none;
+  }
+}
+
+@media (min-width: 980px) {
+  .zoom-controls__sliderLabel {
+    display: none !important;
+  }
 }
 
 #zoomLevel {
@@ -385,6 +501,23 @@ body::before {
   overflow-y: auto;
   flex-shrink: 0;
   -webkit-overflow-scrolling: touch;
+  scrollbar-color: rgba(212, 184, 150, 0.6) rgba(0, 0, 0, 0.22);
+}
+
+.drawer--rail::-webkit-scrollbar {
+  width: 8px;
+}
+
+.drawer--rail::-webkit-scrollbar-track {
+  margin: 4px 0;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.18);
+}
+
+.drawer--rail::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  border: 2px solid rgba(35, 28, 24, 0.45);
+  background: linear-gradient(180deg, var(--gh-mustard), var(--gh-terracotta));
 }
 
 .drawer__top {
@@ -430,6 +563,69 @@ body::before {
   line-height: 1.5;
   white-space: pre-wrap;
 }
+.drawer__pollGrid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-top: 12px;
+  align-items: start;
+}
+
+.drawer__pollOpt {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: stretch;
+  min-width: 0;
+  text-align: center;
+  padding: 8px;
+  border-radius: 8px;
+  border: 1px solid rgba(80, 60, 40, 0.35);
+  background: rgba(0, 0, 0, 0.12);
+}
+
+.drawer__pollOpt--voted {
+  border-color: rgba(244, 169, 0, 0.55);
+  box-shadow: inset 0 0 0 2px rgba(244, 169, 0, 0.95);
+  background: rgba(244, 169, 0, 0.07);
+}
+
+.drawer__pollThumb {
+  width: 100%;
+  aspect-ratio: 1;
+  max-height: 160px;
+  margin: 0 auto;
+  border-radius: 6px;
+  overflow: hidden;
+  background: radial-gradient(circle at 35% 30%, rgba(255, 248, 240, 0.08), rgba(0, 0, 0, 0.38));
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.drawer__pollThumb img {
+  max-width: 100%;
+  max-height: 100%;
+  width: auto;
+  height: auto;
+  display: block;
+  object-fit: contain;
+  image-rendering: pixelated;
+}
+
+.drawer__pollOptName {
+  font-family: var(--friendly);
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+  line-height: 1.25;
+}
+
+.drawer__pollCount {
+  font-size: 12px;
+  color: var(--muted);
+}
+
 .drawer__matchPanel {
   margin-top: 0.6rem;
 }
@@ -580,7 +776,7 @@ body::before {
 }
 .card::before,
 .world__wrap::before,
-.drawer::before {
+.drawer:not(.drawer--rail)::before {
   content: "";
   position: absolute;
   inset: 0;

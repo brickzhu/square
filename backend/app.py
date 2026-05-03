@@ -59,9 +59,19 @@ def now_ms() -> int:
 MATCH_TURN_LIMIT_MS = int(os.environ.get("SQUARE_MATCH_TURN_LIMIT_MS", str(5 * 60 * 1000)))
 MATCH_TURN_WARN_MS = int(os.environ.get("SQUARE_MATCH_TURN_WARN_MS", str(60 * 1000)))
 
+POLL_DURATION_MIN_MS = int(os.environ.get("SQUARE_POLL_DURATION_MIN_MS", str(30_000)))
+POLL_DURATION_MAX_MS = int(os.environ.get("SQUARE_POLL_DURATION_MAX_MS", str(30 * 24 * 3600 * 1000)))
+
 
 def load_db() -> dict[str, Any]:
-    defaults: dict[str, Any] = {"posts": [], "comments": [], "likes": [], "bans": [], "matches": []}
+    defaults: dict[str, Any] = {
+        "posts": [],
+        "comments": [],
+        "likes": [],
+        "bans": [],
+        "matches": [],
+        "polls": [],
+    }
     if not DB_PATH.exists():
         return {**defaults}
     with DB_PATH.open("r", encoding="utf-8") as f:
@@ -1554,6 +1564,230 @@ def play_move(match_id: str):
     if _truthy_query("forAgent"):
         pub["agentInput"] = _agent_input_bundle(m, get_client_user_id())
     return jsonify({"ok": True, "item": pub})
+
+
+def _find_poll(db: dict[str, Any], poll_id: str) -> dict[str, Any] | None:
+    for p in db.get("polls", []):
+        if p.get("id") == poll_id:
+            return p
+    return None
+
+
+def _poll_option_count(poll: dict[str, Any]) -> int:
+    opts = poll.get("options")
+    return len(opts) if isinstance(opts, list) else 0
+
+
+def _poll_vote_counts(poll: dict[str, Any]) -> list[int]:
+    n = _poll_option_count(poll)
+    counts = [0] * max(n, 0)
+    for v in poll.get("votes") or []:
+        try:
+            i = int(v.get("optionIndex"))
+            if 0 <= i < len(counts):
+                counts[i] += 1
+        except (TypeError, ValueError):
+            pass
+    return counts
+
+
+def _poll_leading_index(counts: list[int]) -> int:
+    best = -1
+    best_i = 0
+    for i, c in enumerate(counts):
+        if c > best:
+            best = c
+            best_i = i
+    return best_i
+
+
+def _poll_to_public(poll: dict[str, Any], viewer_uid: str) -> dict[str, Any]:
+    opts_raw = poll.get("options") or []
+    counts = _poll_vote_counts(poll)
+    ends = int(poll.get("endsAtMs") or 0)
+    now = now_ms()
+    is_open = now < ends
+    my_vote: int | None = None
+    for v in reversed(poll.get("votes") or []):
+        if str(v.get("userId")) == str(viewer_uid):
+            try:
+                my_vote = int(v.get("optionIndex"))
+            except (TypeError, ValueError):
+                my_vote = None
+            break
+    lead = _poll_leading_index(counts) if counts else 0
+    options_out: list[dict[str, Any]] = []
+    for i, o in enumerate(opts_raw):
+        if not isinstance(o, dict):
+            continue
+        options_out.append(
+            {
+                "name": o.get("name", ""),
+                "imageUrl": o.get("imageUrl", ""),
+                "voteCount": counts[i] if i < len(counts) else 0,
+            }
+        )
+    promoted = bool(poll.get("plazaPromoted"))
+    prom_idx = poll.get("promotedOptionIndex")
+    try:
+        prom_idx_i = int(prom_idx) if prom_idx is not None else None
+    except (TypeError, ValueError):
+        prom_idx_i = None
+    return {
+        "id": poll["id"],
+        "title": poll.get("title", ""),
+        "author": poll.get("author"),
+        "createdAtMs": poll.get("createdAtMs"),
+        "endsAtMs": ends,
+        "isOpen": is_open,
+        "options": options_out,
+        "totalVotes": sum(counts),
+        "myVote": my_vote,
+        "leadingOptionIndex": lead,
+        "plazaPromoted": promoted,
+        "promotedAtMs": poll.get("promotedAtMs"),
+        "promotedOptionIndex": prom_idx_i if promoted else None,
+    }
+
+
+@app.get("/api/v1/polls")
+def list_polls():
+    db = load_db()
+    uid = get_client_user_id()
+    polls = list(db.get("polls", []))
+    polls.sort(key=lambda p: int(p.get("createdAtMs", 0)), reverse=True)
+    items = [_poll_to_public(p, uid) for p in polls[:120]]
+    return jsonify({"items": items})
+
+
+@app.get("/api/v1/polls/<poll_id>")
+def get_poll(poll_id: str):
+    db = load_db()
+    p = _find_poll(db, sanitize_text(poll_id, max_len=80))
+    if not p:
+        return jsonify({"ok": False, "error": {"message": "not found"}}), 404
+    uid = get_client_user_id()
+    return jsonify({"ok": True, "item": _poll_to_public(p, uid)})
+
+
+@app.post("/api/v1/polls")
+def create_poll():
+    db = load_db()
+    body = request.get_json(force=True, silent=False) or {}
+    uid = get_client_user_id()
+    title = sanitize_text(body.get("title", ""), max_len=80)
+    if not title:
+        return jsonify({"ok": False, "error": {"message": "title required"}}), 400
+
+    dur_raw = body.get("durationMs")
+    try:
+        duration_ms = int(dur_raw)
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "error": {"message": "durationMs invalid"}}), 400
+    if duration_ms < POLL_DURATION_MIN_MS or duration_ms > POLL_DURATION_MAX_MS:
+        return (
+            jsonify(
+                {
+                    "ok": False,
+                    "error": {
+                        "message": f"durationMs must be between {POLL_DURATION_MIN_MS} and {POLL_DURATION_MAX_MS}",
+                    },
+                }
+            ),
+            400,
+        )
+
+    raw_opts = body.get("options")
+    if not isinstance(raw_opts, list) or len(raw_opts) != 4:
+        return jsonify({"ok": False, "error": {"message": "options must be an array of exactly 4 items"}}), 400
+
+    options: list[dict[str, Any]] = []
+    for i, o in enumerate(raw_opts):
+        if not isinstance(o, dict):
+            return jsonify({"ok": False, "error": {"message": f"option {i} invalid"}}), 400
+        name = sanitize_text(str(o.get("name", "")), max_len=48)
+        if not name:
+            return jsonify({"ok": False, "error": {"message": f"option {i} name required"}}), 400
+        image_url = sanitize_text(o.get("imageUrl", ""), max_len=500)
+        if not image_url:
+            merged = dict(body)
+            merged.update(o)
+            image_url = _save_inline_image(merged)
+        if not image_url:
+            return jsonify({"ok": False, "error": {"message": f"option {i} needs imageUrl or imageBase64"}}), 400
+        options.append({"name": name, "imageUrl": image_url})
+
+    now = now_ms()
+    poll: dict[str, Any] = {
+        "id": new_id("poll"),
+        "title": title,
+        "author": {
+            "userId": uid,
+            "displayName": sanitize_text(body.get("displayName", "匿名小龙虾"), max_len=16),
+        },
+        "createdAtMs": now,
+        "endsAtMs": now + duration_ms,
+        "options": options,
+        "votes": [],
+        "plazaPromoted": False,
+    }
+    db.setdefault("polls", []).append(poll)
+    save_db(db)
+    return jsonify({"ok": True, "item": _poll_to_public(poll, uid)})
+
+
+@app.post("/api/v1/polls/<poll_id>/votes")
+def vote_poll(poll_id: str):
+    db = load_db()
+    pid = sanitize_text(poll_id, max_len=80)
+    poll = _find_poll(db, pid)
+    if not poll:
+        return jsonify({"ok": False, "error": {"message": "not found"}}), 404
+    if now_ms() >= int(poll.get("endsAtMs") or 0):
+        return jsonify({"ok": False, "error": {"message": "poll closed"}}), 400
+
+    body = request.get_json(force=True, silent=False) or {}
+    try:
+        opt_i = int(body.get("optionIndex"))
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "error": {"message": "optionIndex invalid"}}), 400
+    nopt = _poll_option_count(poll)
+    if not (0 <= opt_i < nopt):
+        return jsonify({"ok": False, "error": {"message": "optionIndex out of range"}}), 400
+
+    uid = get_client_user_id()
+    votes: list[dict[str, Any]] = [v for v in (poll.get("votes") or []) if str(v.get("userId")) != str(uid)]
+    vote_row: dict[str, Any] = {
+        "userId": uid,
+        "optionIndex": opt_i,
+        "createdAtMs": now_ms(),
+    }
+    dn = sanitize_text(body.get("displayName", ""), max_len=16)
+    if dn:
+        vote_row["displayName"] = dn
+    votes.append(vote_row)
+    poll["votes"] = votes
+    save_db(db)
+    return jsonify({"ok": True, "item": _poll_to_public(poll, uid)})
+
+
+@app.post("/api/v1/admin/polls/<poll_id>/promote")
+def admin_promote_poll(poll_id: str):
+    deny = _require_square_admin()
+    if deny:
+        return deny
+    db = load_db()
+    pid = sanitize_text(poll_id, max_len=80)
+    poll = _find_poll(db, pid)
+    if not poll:
+        return jsonify({"ok": False, "error": {"message": "not found"}}), 404
+    counts = _poll_vote_counts(poll)
+    winner = _poll_leading_index(counts) if counts else 0
+    poll["plazaPromoted"] = True
+    poll["promotedAtMs"] = now_ms()
+    poll["promotedOptionIndex"] = winner
+    save_db(db)
+    return jsonify({"ok": True, "item": _poll_to_public(poll, get_client_user_id())})
 
 
 @app.get("/static/<path:filename>")

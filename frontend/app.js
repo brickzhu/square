@@ -22,8 +22,11 @@ let selectedPostId = null;
 let selectedPost = null;
 let drawerMode = "post";
 let selectedMatch = null;
+let selectedPollId = null;
 /** 已加载的帖子（含「加载更多」追加），与对局合并后渲染动态 */
 let feedPostsBuffer = [];
+/** 投票列表（与地图同源，不参与 feed 分页） */
+let feedPollsBuffer = [];
 
 function fmtTime(ms) {
   try {
@@ -64,6 +67,11 @@ async function api(path, opts = {}) {
 function clamp(n, a, b) {
   return Math.max(a, Math.min(b, n));
 }
+
+/** 广场主页地图相机：默认缩放与各通道（滚轮 / 手势 / UI）共用边界 */
+const DEFAULT_PLAZA_ZOOM = 0.58;
+const PLAZA_ZOOM_SCENE_MIN = 0.5;
+const PLAZA_ZOOM_SCENE_MAX = 4.2;
 
 function isMyPost(p) {
   return !!(p && p.author && p.author.userId === getSquareUserId());
@@ -112,7 +120,7 @@ function boothZoneForPost(p) {
   const t = (p.type || "").toLowerCase();
   if (t.includes("avatar")) return "avatar";
   if (t.includes("forum")) return "forum";
-  return "strip";
+  return "vote";
 }
 
 function formatMatchRoster(m) {
@@ -145,6 +153,9 @@ function setDrawerMode(mode) {
   document.querySelectorAll("[data-drawer-match-only]").forEach((el) => {
     el.classList.toggle("hidden", mode !== "match");
   });
+  document.querySelectorAll("[data-drawer-poll-only]").forEach((el) => {
+    el.classList.toggle("hidden", mode !== "poll");
+  });
 }
 
 function focusDrawerInRail() {
@@ -161,12 +172,19 @@ function focusDrawerInRail() {
 
 function feedEntrySortKey(entry) {
   if (entry.kind === "post") return entry.item.createdAtMs || 0;
+  if (entry.kind === "poll") return entry.item.createdAtMs || 0;
   const m = entry.item;
   const u = Number(m.updatedAtMs);
   const c = Number(m.createdAtMs);
   if (Number.isFinite(u) && u > 0) return u;
   if (Number.isFinite(c) && c > 0) return c;
   return 0;
+}
+
+function pollStatusText(pl) {
+  if (pl.plazaPromoted) return "已亮相广场";
+  if (pl.isOpen) return "投票中";
+  return "已截止";
 }
 
 function renderMatchCard(m) {
@@ -209,6 +227,10 @@ function renderMatchCard(m) {
   return root;
 }
 
+function pollFeedSortKey(pl) {
+  return Number(pl.createdAtMs) || 0;
+}
+
 function rebuildFeedList() {
   const feed = document.getElementById("feed");
   if (!feed || !worldState) return;
@@ -218,6 +240,9 @@ function rebuildFeedList() {
   for (const p of feedPostsBuffer) {
     if (zf === "all" || boothZoneForPost(p) === zf) entries.push({ kind: "post", item: p });
   }
+  for (const pl of feedPollsBuffer) {
+    if (zf === "all" || zf === "vote") entries.push({ kind: "poll", item: pl });
+  }
   for (const m of worldState.matches || []) {
     if (isDemoMatch(m)) continue;
     if (zf === "all" || zf === "match") entries.push({ kind: "match", item: m });
@@ -225,6 +250,7 @@ function rebuildFeedList() {
   entries.sort((a, b) => feedEntrySortKey(b) - feedEntrySortKey(a));
   for (const e of entries) {
     if (e.kind === "post") feed.appendChild(renderPost(e.item));
+    else if (e.kind === "poll") feed.appendChild(renderPollCard(e.item));
     else feed.appendChild(renderMatchCard(e.item));
   }
 }
@@ -310,6 +336,56 @@ function renderPost(p) {
   return root;
 }
 
+function renderPollCard(pl) {
+  const root = el("div", "post post--poll");
+  root.setAttribute("role", "button");
+  root.tabIndex = 0;
+  const open = () => void openPollDrawer(pl);
+  root.addEventListener("click", open);
+  root.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      open();
+    }
+  });
+
+  const thumb = el("div", "thumb thumb--poll");
+  const idx =
+    pl.plazaPromoted && pl.promotedOptionIndex != null ? pl.promotedOptionIndex : pl.leadingOptionIndex;
+  const lead = pl.options?.[idx];
+  if (lead?.imageUrl) {
+    const img = document.createElement("img");
+    img.src = lead.imageUrl;
+    img.alt = lead.name || "option";
+    thumb.appendChild(img);
+  } else {
+    thumb.textContent = "🗳";
+    thumb.setAttribute("aria-hidden", "true");
+  }
+
+  const meta = el("div", "meta");
+  meta.appendChild(el("div", "meta__title", pl.title || "投票"));
+
+  const row = el("div", "meta__row");
+  row.appendChild(el("span", "pill", "投票街"));
+  row.appendChild(el("span", "pill", pl.author?.displayName || "匿名"));
+  row.appendChild(el("span", "pill", fmtTime(pl.createdAtMs)));
+  row.appendChild(el("span", "pill", pollStatusText(pl)));
+  row.appendChild(el("span", "pill", `总票数 ${pl.totalVotes ?? 0}`));
+  meta.appendChild(row);
+
+  const hint = pl.plazaPromoted
+    ? "运维已将该投票胜选项亮相广场"
+    : pl.isOpen
+      ? "点击参与四选一（可改票至截止）"
+      : "投票已截止，地图旁展示当前胜选项";
+  meta.appendChild(el("div", "meta__hint", hint));
+
+  root.appendChild(thumb);
+  root.appendChild(meta);
+  return root;
+}
+
 async function loadFeed({ append = false } = {}) {
   const qs = new URLSearchParams();
   qs.set("limit", "30");
@@ -327,13 +403,27 @@ async function loadFeed({ append = false } = {}) {
   }
 
   const newPosts = data.items || [];
+  let pollsBuf = [];
   if (!append) feedPostsBuffer = newPosts.slice();
   else feedPostsBuffer.push(...newPosts);
   cursor = data.nextCursor || null;
 
+  try {
+    const pmd = await api("/api/v1/polls");
+    pollsBuf = pmd.items || [];
+  } catch {
+    pollsBuf = [];
+  }
+  if (!append) feedPollsBuffer = pollsBuf;
+  else {
+    /* 加载更多帖子时不重复追加全量投票列表 */
+    feedPollsBuffer = pollsBuf;
+  }
+
   if (worldState) {
     worldState.matches = matchesForMap;
     worldState.setPosts(feedPostsBuffer);
+    worldState.setPolls(feedPollsBuffer);
   }
   rebuildFeedList();
 }
@@ -357,6 +447,7 @@ function updateDrawerDeleteVisibility() {
 
 async function openDrawer(post) {
   selectedMatch = null;
+  selectedPollId = null;
   setDrawerMode("post");
   selectedPost = post;
   selectedPostId = post.id;
@@ -402,13 +493,110 @@ async function syncDrawerIfOpen() {
     }
     return;
   }
+  if (drawerMode === "poll" && selectedPollId) {
+    try {
+      const data = await api(`/api/v1/polls/${selectedPollId}`);
+      if (data?.item) await openPollDrawer(data.item);
+    } catch {
+      /* ignore */
+    }
+    return;
+  }
   if (!selectedPostId) return;
   const data = await api(`/api/v1/feed?limit=100`);
   const updated = (data.items || []).find((it) => it.id === selectedPostId);
   if (updated) await openDrawer(updated);
 }
 
+async function openPollDrawer(pl) {
+  selectedPost = null;
+  selectedPostId = null;
+  selectedMatch = null;
+  selectedPollId = pl.id;
+  setDrawerMode("poll");
+
+  let item = pl;
+  try {
+    const data = await api(`/api/v1/polls/${pl.id}`);
+    if (data?.item) item = data.item;
+  } catch {
+    /* 使用传入快照 */
+  }
+
+  const drawer = document.getElementById("drawer");
+  drawer.classList.remove("hidden");
+  document.getElementById("drawerTitle").textContent = item.title || "投票";
+
+  const meta = document.getElementById("drawerMeta");
+  meta.innerHTML = "";
+  meta.appendChild(pill("投票"));
+  meta.appendChild(pill(item.author?.displayName || "匿名"));
+  meta.appendChild(pill(fmtTime(item.createdAtMs)));
+  meta.appendChild(pill(pollStatusText(item)));
+  if (item.plazaPromoted) meta.appendChild(pill("广场亮相"));
+
+  const ends = Number(item.endsAtMs) || 0;
+  const body = document.getElementById("drawerBody");
+  body.innerHTML = "";
+  body.appendChild(
+    el("div", "drawer__text", item.isOpen ? `进行中 · 截止 ${fmtTime(ends)}` : `已截止（${fmtTime(ends)}）`),
+  );
+
+  const grid = el("div", "drawer__pollGrid");
+  (item.options || []).forEach((opt, i) => {
+    const cell = el("div", "drawer__pollOpt");
+    if (opt.imageUrl) {
+      const wrap = el("div", "drawer__pollThumb");
+      const img = document.createElement("img");
+      img.src = opt.imageUrl;
+      img.alt = opt.name || "";
+      img.loading = "lazy";
+      wrap.appendChild(img);
+      cell.appendChild(wrap);
+    }
+    cell.appendChild(el("div", "drawer__pollOptName", opt.name || `选项 ${i + 1}`));
+    cell.appendChild(el("div", "drawer__pollCount", `票数 ${opt.voteCount ?? 0}`));
+    if (item.myVote === i) cell.classList.add("drawer__pollOpt--voted");
+    const voteBtn = el("button", "btn btn--ghost btn--block", item.isOpen ? "投这一格" : "已截止");
+    voteBtn.disabled = !item.isOpen;
+    voteBtn.type = "button";
+    voteBtn.onclick = async () => {
+      if (!item.isOpen) return;
+      try {
+        await api(`/api/v1/polls/${item.id}/votes`, {
+          method: "POST",
+          body: JSON.stringify({ optionIndex: i }),
+        });
+        await refresh();
+        const d2 = await api(`/api/v1/polls/${item.id}`);
+        if (d2?.item) await openPollDrawer(d2.item);
+      } catch (e) {
+        alert(e?.message || String(e));
+      }
+    };
+    cell.appendChild(voteBtn);
+    grid.appendChild(cell);
+  });
+  body.appendChild(grid);
+
+  const panel = document.getElementById("drawerPollPanel");
+  panel.innerHTML = "";
+  const lead = (item.options || [])[item.leadingOptionIndex];
+  panel.appendChild(
+    el(
+      "p",
+      "hint",
+      `总票数 ${item.totalVotes ?? 0} · 当前领先：${lead?.name || "—"}${
+        item.plazaPromoted ? " · 已由运维亮相广场" : ""
+      }`,
+    ),
+  );
+
+  focusDrawerInRail();
+}
+
 async function openMatchDrawer(m) {
+  selectedPollId = null;
   selectedPost = null;
   selectedPostId = null;
   setDrawerMode("match");
@@ -484,24 +672,27 @@ function initWorld() {
   const state = {
     posts: [],
     matches: [],
+    polls: [],
     stallZoneFilter: "all",
     setPosts(items) {
       this.posts = items || [];
-      sceneRef?.refreshBooths?.(this.posts, this.matches, this.stallZoneFilter);
+      sceneRef?.refreshBooths?.(this.posts, this.matches, this.polls, this.stallZoneFilter);
+    },
+    setPolls(items) {
+      this.polls = items || [];
+      sceneRef?.refreshBooths?.(this.posts, this.matches, this.polls, this.stallZoneFilter);
     },
     setStallZoneFilter(zone) {
-      const ok = new Set(["all", "strip", "avatar", "match", "forum"]);
+      const ok = new Set(["all", "vote", "avatar", "match", "forum"]);
       this.stallZoneFilter = ok.has(zone) ? zone : "all";
-      sceneRef?.refreshBooths?.(this.posts, this.matches, this.stallZoneFilter);
+      sceneRef?.refreshBooths?.(this.posts, this.matches, this.polls, this.stallZoneFilter);
       rebuildFeedList();
     },
   };
 
   let sceneRef = null;
-  /** 广场相机默认/重置缩放（与 UI 百分比一致，当前70%） */
-  /** 广场地图默认缩放（广场放大后略调小以便一屏看到更多） */
-  /** 略小于 0.7，与 PS≈1.5 的铺砖区匹配一屏可视范围 */
-  const DEFAULT_PLAZA_ZOOM = 0.58;
+  /** 广场地图默认缩放约 0.58；投票截止后胜选项在地图留影时长 */
+  const POLL_WINNER_PLAZA_LINGER_MS = 86400000;
   /** 动物进入分区水池后，在此时间内留在水中，期满才被推到岸上 */
   const PLAZA_POOL_ESCAPE_MS = 5000;
   /** 四分区景观水池面积相对原设计的倍数（线尺度 = √面积倍数） */
@@ -572,6 +763,79 @@ function initWorld() {
     let t = (apx * abx + apy * aby) / ab2;
     t = Math.max(0, Math.min(1, t));
     return { x: ax + abx * t, y: ay + aby * t };
+  }
+
+  /**
+   * 广场地图上展示的像素图：应尽量上传 **带 Alpha 的 PNG**。
+   * 对矩形实心背景图，用语义上的四角取样估计底色并在容差内抠成透明（JPG / 未抠图兜底）。
+   * @returns 是否已向 `destKey` 注册了 CanvasTexture
+   */
+  function plazaKnockOutFlatBackdrop(scene, sourceKey, destKey) {
+    const tm = scene.textures;
+    if (!tm || !tm.exists(sourceKey)) return false;
+    let imgEl = null;
+    let cw = 0;
+    let ch = 0;
+    try {
+      const tex = tm.get(sourceKey);
+      imgEl =
+        typeof tex.getSourceImage === "function"
+          ? tex.getSourceImage()
+          : tex.get().source.image;
+      cw = imgEl?.naturalWidth || imgEl?.width || 0;
+      ch = imgEl?.naturalHeight || imgEl?.height || 0;
+      if (!imgEl || !cw || !ch) return false;
+    } catch {
+      return false;
+    }
+    const pad = clamp(Math.round(Math.min(cw, ch) * 0.015), 1, Math.max(6, cw));
+    /** @type {HTMLCanvasElement} */
+    const can = typeof document !== "undefined" ? document.createElement("canvas") : null;
+    if (!can || !can.getContext) return false;
+    can.width = cw;
+    can.height = ch;
+    const ctx = can.getContext("2d", { willReadFrequently: true });
+    if (!ctx) return false;
+    ctx.drawImage(imgEl, 0, 0, cw, ch);
+    let data;
+    try {
+      data = ctx.getImageData(0, 0, cw, ch);
+    } catch {
+      return false;
+    }
+    const d = data.data;
+    const samp = [];
+    const take = (x, y) => {
+      const xi = clamp(x, 0, cw - 1);
+      const yi = clamp(y, 0, ch - 1);
+      const j = (yi * cw + xi) * 4;
+      samp.push([d[j], d[j + 1], d[j + 2]]);
+    };
+    take(pad, pad);
+    take(cw - 1 - pad, pad);
+    take(pad, ch - 1 - pad);
+    take(cw - 1 - pad, ch - 1 - pad);
+    let br = 0;
+    let bg = 0;
+    let bb = 0;
+    for (const c of samp) {
+      br += c[0];
+      bg += c[1];
+      bb += c[2];
+    }
+    const n = samp.length || 1;
+    br /= n;
+    bg /= n;
+    bb /= n;
+    const tol = 50;
+    for (let i = 0; i < d.length; i += 4) {
+      const rd = Math.hypot(d[i] - br, d[i + 1] - bg, d[i + 2] - bb);
+      if (rd <= tol) d[i + 3] = 0;
+    }
+    ctx.putImageData(data, 0, 0);
+    if (tm.exists(destKey)) tm.remove(destKey);
+    tm.addCanvas(destKey, can);
+    return tm.exists(destKey);
   }
 
   function plazaPushOutPolygon(verts, x, y, pad) {
@@ -2838,7 +3102,7 @@ function initWorld() {
       sceneRef = this;
       /* 核心广场尺寸（喷泉、路、分区）以 (0,0) 居中；外围再铺大地砖，缩到最小也不会露出背景色 */
       const TILE = 16;
-      const ZOOM_MIN = 0.5;
+      const ZOOM_MIN = PLAZA_ZOOM_SCENE_MIN;
       /** 相对最初版广场的边长倍数（1.5 = 在原始尺寸上再扩大半倍） */
       const PS = 1.5;
       this.plazaScale = PS;
@@ -2980,6 +3244,17 @@ function initWorld() {
         g.fillStyle(0x786046, 1).fillRect(6, 2, 6, 24);
         g.fillStyle(0x463c36, 1).fillRect(10, 6, 4, 18);
         g.fillStyle(0x5c5249, 1).fillRect(4, 4, 10, 4);
+      });
+      makeTexture(this, "stallVote", 44, 28, (g) => {
+        g.fillStyle(0x3a3528, 1).fillRect(2, 6, 40, 18);
+        g.fillStyle(0x5c5249, 1).fillRect(4, 8, 36, 14);
+        g.lineStyle(2, 0xf4a900, 0.85).strokeRect(3, 7, 38, 16);
+        g.fillStyle(0x231c18, 1).fillRect(16, 4, 12, 5);
+        g.fillStyle(0x1a1612, 1).fillRect(18, 6, 8, 2);
+        g.fillStyle(0xb8d4e8, 0.9).fillRect(6, 10, 6, 6);
+        g.fillRect(14, 10, 6, 6);
+        g.fillRect(24, 10, 6, 6);
+        g.fillRect(32, 10, 6, 6);
       });
       makeTexture(this, "stallStrip", 44, 28, (g) => {
         g.fillStyle(0x4a403a, 1).fillRect(0, 18, 44, 10);
@@ -3170,7 +3445,7 @@ function initWorld() {
         this.add.rectangle(cx, cy, w, h, color, a).setDepth(1).setStrokeStyle(2, 0x231c18, 0.22);
       const ztw = Math.round(400 * Math.SQRT2) * PS;
       const zth = Math.round(240 * Math.SQRT2) * PS;
-      zoneTint(-283 * PS, -215 * PS, ztw, zth, 0x6b8cae, 0.11); // STRIP · 偏冷
+      zoneTint(-283 * PS, -215 * PS, ztw, zth, 0x6b8cae, 0.11); // 投票街 VOTE · 偏冷
       zoneTint(283 * PS, -215 * PS, ztw, zth, 0xc1666b, 0.1); // AVATAR · 陶土
       zoneTint(-283 * PS, 225 * PS, ztw, zth, 0x4a8f5c, 0.09); // ARENA · 绿
       zoneTint(283 * PS, 225 * PS, ztw, zth, 0xd4963c, 0.11); // FORUM（自由发帖）· 金
@@ -3515,54 +3790,98 @@ function initWorld() {
             padding: { x: 8, y: 5 },
           })
           .setDepth(depthZoneTitle);
-      mkLabel(-312 * PS, -292 * PS, "STRIP ST", "#b8d4e8");
+      mkLabel(-312 * PS, -292 * PS, "VOTE ST", "#b8d4e8");
       mkLabel(300 * PS, -292 * PS, "AVATAR ST", "#f0b8bc");
       mkLabel(-312 * PS, 302 * PS, "ARENA ST", "#b8e0c4");
       mkLabel(300 * PS, 302 * PS, "FORUM ST", "#ffe3a8");
 
+      const Z_SCENE_MAX = PLAZA_ZOOM_SCENE_MAX;
+
       this.input.on("wheel", (_pointer, _go, _dx, dy) => {
         const c = this.cameras.main;
         const step = dy > 0 ? -0.12 : 0.12;
-        const raw = clamp(c.zoom + step, ZOOM_MIN, 4.2);
+        const raw = clamp(c.zoom + step, ZOOM_MIN, Z_SCENE_MAX);
         c.setZoom(Math.round(raw * 40) / 40);
       });
 
-      this.input.on("pointermove", (p) => {
-        if (!p.isDown) return;
+      /** 捏合缩放：记下双指落下的初始间距与 zoom，按比例连续映射（单指拖拽平移） */
+      this._pinchBaseline = null;
+
+      this.input.on("pointermove", () => {
         const c = this.cameras.main;
-        c.scrollX -= (p.position.x - p.prevPosition.x) / c.zoom;
-        c.scrollY -= (p.position.y - p.prevPosition.y) / c.zoom;
+        /** @type {Phaser.Input.Pointer[]} */
+        const pts =
+          typeof this.input.manager?.pointers?.filter === "function"
+            ? this.input.manager.pointers.filter((pt) => pt && pt.isDown)
+            : [];
+        const nDown = pts.length;
+
+        if (nDown >= 2) {
+          const ax = pts[0].x;
+          const ay = pts[0].y;
+          const bx = pts[1].x;
+          const by = pts[1].y;
+          const dist = Math.hypot(ax - bx, ay - by);
+
+          if (dist < 14) return;
+
+          if (!this._pinchBaseline) {
+            this._pinchBaseline = { d0: dist, z0: c.zoom };
+          }
+          let nz = this._pinchBaseline.z0 * (dist / Math.max(this._pinchBaseline.d0, 14));
+          nz = clamp(nz, ZOOM_MIN, Z_SCENE_MAX);
+          c.setZoom(nz);
+          return;
+        }
+
+        this._pinchBaseline = null;
+
+        if (nDown !== 1) return;
+        const q = pts[0];
+        c.scrollX -= (q.x - q.prevPosition.x) / c.zoom;
+        c.scrollY -= (q.y - q.prevPosition.y) / c.zoom;
       });
 
-      this.refreshBooths(state.posts, state.matches, state.stallZoneFilter);
+      this.input.on("pointerup", () => {
+        const pts =
+          typeof this.input.manager?.pointers?.filter === "function"
+            ? this.input.manager.pointers.filter((pt) => pt && pt.isDown)
+            : [];
+        if (pts.length < 2) this._pinchBaseline = null;
+      });
+
+      this.refreshBooths(state.posts, state.matches, state.polls, state.stallZoneFilter);
     }
 
-    refreshBooths(posts, matches, zoneFilter) {
+    refreshBooths(posts, matches, polls, zoneFilter) {
+      this._boothGen = (this._boothGen || 0) + 1;
+      const boothGen = this._boothGen;
       for (const b of this.booths) b.destroy();
       this.booths = [];
       this.boothNpcs = [];
 
       const postItems = posts || [];
       const matchItems = matches || [];
+      const pollItems = polls || [];
       const zf = zoneFilter || "all";
       const PS = this.plazaScale || 1;
 
       const zones = {
-        strip: { x0: -498 * PS, y0: -302 * PS, cols: 4, dx: 94 * PS, dy: 66 * PS },
+        vote: { x0: -498 * PS, y0: -302 * PS, cols: 4, dx: 94 * PS, dy: 66 * PS },
         avatar: { x0: 120 * PS, y0: -302 * PS, cols: 4, dx: 94 * PS, dy: 66 * PS },
         match: { x0: -498 * PS, y0: 186 * PS, cols: 4, dx: 94 * PS, dy: 66 * PS },
         forum: { x0: 120 * PS, y0: 186 * PS, cols: 4, dx: 94 * PS, dy: 66 * PS },
       };
-      const idx = { strip: 0, avatar: 0, match: 0, forum: 0 };
+      const idx = { vote: 0, avatar: 0, match: 0, forum: 0 };
       const stallTex = {
-        strip: "stallStrip",
+        vote: "stallVote",
         avatar: "stallAvatar",
         forum: "stallForum",
         match: "stallArena",
       };
 
-      const placeBooth = (z, x, y, label, tweenSeed, onOpen) => {
-        const tex = stallTex[z] || stallTex.strip;
+      const placeBooth = (z, x, y, label, tweenSeed, onOpen, texOverride) => {
+        const tex = texOverride || stallTex[z] || "stallStrip";
         const stall = this.add.image(x, y, tex).setOrigin(0.5).setDepth(7).setInteractive({ useHandCursor: true });
         const hover = z === "match" ? 0xa8e8ff : 0xffd485;
         stall.on("pointerdown", onOpen);
@@ -3577,6 +3896,7 @@ function initWorld() {
           npc = this.add.image(x - 18 * PS, npcY, "shrimp").setOrigin(0.5).setDepth(8);
           if (z === "avatar") npc.setTint(0xffb8c6);
           else if (z === "forum") npc.setTint(0xffe8a0);
+          else if (z === "vote") npc.setTint(0xa8c8e8);
         }
         this.tweens.add({
           targets: npc,
@@ -3603,10 +3923,229 @@ function initWorld() {
         this.booths.push(stall, npc, bubble);
       };
 
+      const placePollBooth = (poll, x, y, label, tweenSeed) => {
+        const onOpen = () => {
+          void openPollDrawer(poll);
+        };
+        const tex = "stallVote";
+        const stall = this.add.image(x, y, tex).setOrigin(0.5).setDepth(7).setInteractive({ useHandCursor: true });
+        stall.on("pointerdown", onOpen);
+        stall.on("pointerover", () => stall.setTint(0xffd485));
+        stall.on("pointerout", () => stall.clearTint());
+        this.booths.push(stall);
+
+        const sub = poll.plazaPromoted ? "★" : "票";
+        const npc = this.add.image(x - 16 * PS, y + 10 * PS, "shrimp").setOrigin(0.5).setDepth(8).setTint(0x9ec5e8);
+        this.tweens.add({
+          targets: npc,
+          y: y + 10 * PS - 2,
+          duration: 700 + (tweenSeed % 5) * 60,
+          yoyo: true,
+          repeat: -1,
+          ease: "Sine.inOut",
+        });
+        this.boothNpcs.push(npc);
+        this.booths.push(npc);
+
+        const bubble = this.add
+          .text(x, y - 30 * PS, label, {
+            fontFamily: '"ZCOOL KuaiLe","Microsoft YaHei",sans-serif',
+            fontSize: `${Math.max(12, Math.round(12 * PS))}px`,
+            color: "#fef9f3",
+            backgroundColor: "rgba(35,28,24,0.75)",
+            padding: { x: Math.round(8 * PS), y: Math.round(5 * PS) },
+          })
+          .setOrigin(0.5, 1)
+          .setDepth(9);
+        bubble.setInteractive({ useHandCursor: true });
+        bubble.on("pointerdown", onOpen);
+        this.booths.push(bubble);
+
+        const leadIdx =
+          poll.plazaPromoted && poll.promotedOptionIndex != null
+            ? poll.promotedOptionIndex
+            : poll.leadingOptionIndex;
+        const opt = (poll.options || [])[leadIdx];
+        const url = opt?.imageUrl;
+        if (url) {
+          let abs;
+          try {
+            abs = new URL(url, window.location.origin).href;
+          } catch {
+            abs = url;
+          }
+          const k = `pld_${String(poll.id).replace(/[^a-zA-Z0-9_]/g, "_")}`;
+          const kRaw = `${k}_raw`;
+          const px = x + 44 * PS;
+          const py = y - 2 * PS;
+          const scene = this;
+          const addSide = () => {
+            if (scene._boothGen !== boothGen) return;
+            if (!scene.textures.exists(k)) return;
+            const img = scene.add.image(px, py, k).setOrigin(0.5).setDepth(8).setDisplaySize(42 * PS, 42 * PS);
+            scene.booths.push(img);
+          };
+          if (scene.textures.exists(k)) addSide();
+          else {
+            scene.load.once(Phaser.Loader.Events.COMPLETE, () => {
+              if (scene._boothGen !== boothGen) return;
+              if (!scene.textures.exists(kRaw)) return;
+              const showKey = plazaKnockOutFlatBackdrop(scene, kRaw, k) ? k : kRaw;
+              if (!scene.textures.exists(showKey)) return;
+              if (showKey === k) {
+                try {
+                  scene.textures.remove(kRaw);
+                } catch {
+                  /* noop */
+                }
+              }
+              const img = scene.add
+                .image(px, py, showKey)
+                .setOrigin(0.5)
+                .setDepth(8)
+                .setDisplaySize(42 * PS, 42 * PS);
+              scene.booths.push(img);
+            });
+            scene.load.image(kRaw, abs);
+            scene.load.start();
+          }
+        }
+
+        const tag = this.add
+          .text(x + 46 * PS, y + 22 * PS, sub, {
+            fontFamily: '"ZCOOL KuaiLe","Microsoft YaHei",sans-serif',
+            fontSize: `${Math.max(10, Math.round(10 * PS))}px`,
+            color: "#2a1f18",
+            backgroundColor: "rgba(255,228,168,0.82)",
+            padding: { x: 4, y: 2 },
+          })
+          .setOrigin(0.5)
+          .setDepth(9);
+        this.booths.push(tag);
+      };
+
+      /** 投票截止后起算 24h 内：**至少有一票**时，在投票街空地展示当期得票最高选项的像素图（固定底座，点开仍进投票抽屉） */
+      const placePollWinnerPedestal = (poll, lingerSlot, winIdx) => {
+        const tv = Number(poll.totalVotes);
+        if (!Number.isFinite(tv) || tv < 1) return;
+        const opts = poll.options || [];
+        if (!opts.length) return;
+        const wi = clamp(Number(winIdx) || 0, 0, opts.length - 1);
+        const url = opts[wi]?.imageUrl;
+        if (!url) return;
+        let abs;
+        try {
+          abs = new URL(url, window.location.origin).href;
+        } catch {
+          abs = url;
+        }
+        const pid = String(poll.id).replace(/[^a-zA-Z0-9_]/g, "_");
+        const k = `plwl_${pid}_opt${wi}`;
+        const kRaw = `${k}_raw`;
+        const gx = lingerSlot % 5;
+        const gy = Math.floor(lingerSlot / 5);
+        const pxRaw = -402 * PS + gx * 60 * PS;
+        const pyRaw = -258 * PS + gy * 48 * PS;
+        const pad = this.clampPosToPlaza(pxRaw, pyRaw);
+        const scene = this;
+        const onOpen = () => {
+          void openPollDrawer(poll);
+        };
+        const mount = (showKey) => {
+          if (scene._boothGen !== boothGen || !scene.textures.exists(showKey)) return;
+          const foot = scene.add
+            .ellipse(pad.x, pad.y + 4 * PS, 38 * PS, 11 * PS, 0x1a1614, 0.42)
+            .setDepth(8.02);
+          const sprite = scene.add
+            .image(pad.x, pad.y - 10 * PS, showKey)
+            .setOrigin(0.5, 1)
+            .setDepth(8.35)
+            .setInteractive({ useHandCursor: true })
+            .setDisplaySize(48 * PS, 48 * PS);
+          sprite.on("pointerdown", onOpen);
+          scene.tweens.add({
+            targets: sprite,
+            y: pad.y - 14 * PS,
+            duration: 1250 + (lingerSlot % 5) * 90,
+            yoyo: true,
+            repeat: -1,
+            ease: "Sine.inOut",
+          });
+          const cap = scene.add
+            .text(pad.x, pad.y - 56 * PS, "胜出 · 留影 24h", {
+              fontFamily: '"ZCOOL KuaiLe","Microsoft YaHei",sans-serif',
+              fontSize: `${Math.max(10, Math.round(10 * PS))}px`,
+              color: "#e8f4fc",
+              backgroundColor: "rgba(35,28,24,0.72)",
+              padding: { x: 5, y: 3 },
+            })
+            .setOrigin(0.5, 1)
+            .setDepth(9);
+          cap.setInteractive({ useHandCursor: true });
+          cap.on("pointerdown", onOpen);
+          scene.booths.push(foot, sprite, cap);
+        };
+        if (scene.textures.exists(k)) mount(k);
+        else if (scene.textures.exists(kRaw)) mount(kRaw);
+        else {
+          scene.load.once(Phaser.Loader.Events.COMPLETE, () => {
+            if (scene._boothGen !== boothGen) return;
+            if (!scene.textures.exists(kRaw)) return;
+            const showKey = plazaKnockOutFlatBackdrop(scene, kRaw, k) ? k : kRaw;
+            if (!scene.textures.exists(showKey)) return;
+            if (showKey === k) {
+              try {
+                scene.textures.remove(kRaw);
+              } catch {
+                /* noop */
+              }
+            }
+            mount(showKey);
+          });
+          scene.load.image(kRaw, abs);
+          scene.load.start();
+        }
+      };
+
+      for (const poll of pollItems) {
+        if (zf !== "all" && zf !== "vote") continue;
+        const zc = zones.vote;
+        const i = idx.vote++;
+        const col = i % zc.cols;
+        const row = Math.floor(i / zc.cols);
+        const x = zc.x0 + col * zc.dx + (row % 2) * 8 * PS;
+        const y = zc.y0 + row * zc.dy;
+        const rawTitle = poll.title || "投票";
+        const title = rawTitle.length > 8 ? `${rawTitle.slice(0, 8)}…` : rawTitle;
+        placePollBooth(poll, x, y, title, i + 31);
+      }
+
+      {
+        const lingerNow = Date.now();
+        /** 截止未满 24h、仍应在地图留影的投票 */
+        const lingerActive = [];
+        for (const p of pollItems) {
+          if (!p || p.isOpen) continue;
+          const votes = Number(p.totalVotes);
+          if (!Number.isFinite(votes) || votes < 1) continue;
+          const e = Number(p.endsAtMs) || 0;
+          if (e && lingerNow >= e && lingerNow < e + POLL_WINNER_PLAZA_LINGER_MS) lingerActive.push(p);
+        }
+        lingerActive.sort((a, b) => (Number(b.endsAtMs) || 0) - (Number(a.endsAtMs) || 0));
+        if (zf === "all" || zf === "vote") {
+          let ls = 0;
+          for (const p of lingerActive) {
+            const maxIdx = Math.max(0, (p.options?.length || 1) - 1);
+            const wi = clamp(Number(p.leadingOptionIndex) || 0, 0, maxIdx);
+            placePollWinnerPedestal(p, ls++, wi);
+          }
+        }
+      }
+
       for (const p of postItems) {
         const z = boothZoneForPost(p);
         if (zf !== "all" && zf !== z) continue;
-        const zc = zones[z] || zones.strip;
+        const zc = zones[z] || zones.vote;
         const i = idx[z]++;
         const col = i % zc.cols;
         const row = Math.floor(i / zc.cols);
@@ -3615,7 +4154,8 @@ function initWorld() {
 
         const rawTitle = p.title || "（无标题）";
         const title = rawTitle.length > 8 ? `${rawTitle.slice(0, 8)}…` : rawTitle;
-        placeBooth(z, x, y, title, i, () => openDrawer(p));
+        const texOv = z === "vote" ? "stallStrip" : undefined;
+        placeBooth(z, x, y, title, i, () => openDrawer(p), texOv);
       }
 
       for (const m of matchItems) {
@@ -3663,15 +4203,13 @@ function initWorld() {
   
   // 绑定缩放控制到 worldState
   const ZOOM_STEP = 0.2;
-  const ZOOM_MIN_BTN = 0.4;
-  const ZOOM_MAX_BTN = 3.0;
-  
+
   state.setZoom = (zoom) => {
-    if (sceneRef && sceneRef.cameras && sceneRef.cameras.main) {
-      sceneRef.cameras.main.setZoom(zoom);
-      return true;
-    }
-    return false;
+    const cam = sceneRef?.cameras?.main;
+    if (!cam) return false;
+    const z = clamp(Number(zoom) || DEFAULT_PLAZA_ZOOM, PLAZA_ZOOM_SCENE_MIN, PLAZA_ZOOM_SCENE_MAX);
+    cam.setZoom(z);
+    return true;
   };
   
   state.getZoom = () => {
@@ -3684,15 +4222,15 @@ function initWorld() {
   state.zoomIn = () => {
     const cam = sceneRef?.cameras?.main;
     if (!cam) return false;
-    const newZoom = Math.min(ZOOM_MAX_BTN, cam.zoom + ZOOM_STEP);
+    const newZoom = Math.min(PLAZA_ZOOM_SCENE_MAX, cam.zoom + ZOOM_STEP);
     cam.setZoom(Math.round(newZoom * 40) / 40);
     return true;
   };
-  
+
   state.zoomOut = () => {
     const cam = sceneRef?.cameras?.main;
     if (!cam) return false;
-    const newZoom = Math.max(ZOOM_MIN_BTN, cam.zoom - ZOOM_STEP);
+    const newZoom = Math.max(PLAZA_ZOOM_SCENE_MIN, cam.zoom - ZOOM_STEP);
     cam.setZoom(Math.round(newZoom * 40) / 40);
     return true;
   };
@@ -3717,6 +4255,7 @@ window.addEventListener("DOMContentLoaded", async () => {
     selectedPostId = null;
     selectedPost = null;
     selectedMatch = null;
+    selectedPollId = null;
     setDrawerMode("post");
     document.getElementById("drawer").classList.add("hidden");
   };
@@ -3759,11 +4298,66 @@ window.addEventListener("DOMContentLoaded", async () => {
   const zoomInBtn = document.getElementById("zoomInBtn");
   const zoomResetBtn = document.getElementById("zoomResetBtn");
   const zoomLevelDisplay = document.getElementById("zoomLevel");
+  const zoomSlider = document.getElementById("zoomSlider");
+  let zoomSliderFingerDown = false;
+
+  if (zoomSlider) {
+    zoomSlider.min = String(PLAZA_ZOOM_SCENE_MIN * 100);
+    zoomSlider.max = String(PLAZA_ZOOM_SCENE_MAX * 100);
+    zoomSlider.step = "1";
+
+    zoomSlider.addEventListener("pointerdown", () => {
+      zoomSliderFingerDown = true;
+    });
+    zoomSlider.addEventListener(
+      "pointerup",
+      () => {
+        zoomSliderFingerDown = false;
+      },
+      { passive: true },
+    );
+    zoomSlider.addEventListener(
+      "pointercancel",
+      () => {
+        zoomSliderFingerDown = false;
+      },
+      { passive: true },
+    );
+    zoomSlider.addEventListener(
+      "touchend",
+      () => {
+        zoomSliderFingerDown = false;
+      },
+      { passive: true },
+    );
+
+    zoomSlider.addEventListener(
+      "input",
+      () => {
+        const v = Number(zoomSlider.value);
+        if (!Number.isFinite(v)) return;
+        worldState.setZoom(v / 100);
+        if (worldState?.getZoom && zoomLevelDisplay) {
+          const zoom = worldState.getZoom();
+          zoomLevelDisplay.textContent = `${Math.round(zoom * 100)}%`;
+        }
+      },
+      { passive: true },
+    );
+  }
 
   function updateZoomLevel() {
-    if (worldState && worldState.getZoom && zoomLevelDisplay) {
+    if (worldState?.getZoom && zoomLevelDisplay) {
       const zoom = worldState.getZoom();
-      zoomLevelDisplay.textContent = Math.round(zoom * 100) + "%";
+      zoomLevelDisplay.textContent = `${Math.round(zoom * 100)}%`;
+    }
+    if (worldState?.getZoom && zoomSlider && !zoomSliderFingerDown) {
+      const zPct = clamp(
+        Math.round(worldState.getZoom() * 100),
+        PLAZA_ZOOM_SCENE_MIN * 100,
+        PLAZA_ZOOM_SCENE_MAX * 100,
+      );
+      zoomSlider.value = String(zPct);
     }
   }
 
@@ -3797,7 +4391,7 @@ window.addEventListener("DOMContentLoaded", async () => {
   // 初始更新缩放级别（Phaser 场景就绪后很快同步真实 zoom）
   setTimeout(updateZoomLevel, 150);
   // 定期同步
-  setInterval(updateZoomLevel, 2000);
+  setInterval(updateZoomLevel, 280);
 
   await refresh();
 });
