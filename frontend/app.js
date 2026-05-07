@@ -802,7 +802,15 @@ function initWorld() {
   const ROACH_MANHOLE_PANIC_LIZARD = 54;
   const ROACH_MANHOLE_PANIC_SNAKE = 50;
   const ROACH_MANHOLE_PANIC_FROG = 92;
-
+  /**
+   * 「虾扯蛋」：鱼卵先到池边再甩绳、蜥蜴蛋先近身再甩绳；蛋进摊位篓子，单摊集满 STALL_EGG_BATCH_COUNT 颗后结算——蜥蜴蛋全部孵化跑路，鱼卵再一条条孵化并由虾吃掉。
+   * 参数字面量仍用 STALL_SHRIMP_* 表示拖蛋运动学参数。
+   */
+  const STALL_SHRIMP_PULL_SPEED = 46;
+  const STALL_SHRIMP_APPROACH_DIST = 24;
+  const STALL_EGG_DELIVER_DIST = 32;
+  /** 「虾扯蛋」每个摊位集满颗数后一次性结算（先蜥蜴后小鱼） */
+  const STALL_EGG_BATCH_COUNT = 10;
 
   function makeTexture(scene, key, w, h, painter) {
     const g = scene.make.graphics({ x: 0, y: 0, add: false });
@@ -953,6 +961,8 @@ function initWorld() {
       this.mouseRoam = null;
       /** 摊位前的虾 / 棋子等小 NPC（与猫鼠蜥蜴一样受喷泉弹射） */
       this.boothNpcs = [];
+      /** 「虾扯蛋」：可拖蛋的摆摊小龙虾锚点（竞技场棋子摊除外）；含摊位中心与小虾归位坐标 */
+      this.stallShrimpSites = [];
       /** 中心喷泉 (0,0) 贴图约 40px；进入此半径则弹到内层分区铺砖格上（不外飞到外围大地砖） */
       this.fountainTeleportRadius = 34;
       /** 喷泉内池动态水面（每帧 redraw） */
@@ -1467,7 +1477,19 @@ function initWorld() {
       }
       for (const snk of this.snakes || []) tryFlingSprite(snk.sprite, snk.home, false);
       for (const ro of this.roaches || []) tryFlingSprite(ro.sprite, ro.home, false);
-      for (const npc of this.boothNpcs || []) tryFlingSprite(npc, null, false);
+      for (const npc of this.boothNpcs || []) {
+        // 「虾扯蛋」进行中：Boss 不撞飞摆摊小龙虾
+        if (npc._stallPullEggRef?.stallPull) continue;
+        let batchBusy = false;
+        for (const s of this.stallShrimpSites || []) {
+          if (s.npc === npc && s.eggBatchResolving) {
+            batchBusy = true;
+            break;
+          }
+        }
+        if (batchBusy) continue;
+        tryFlingSprite(npc, null, false);
+      }
     }
 
     nearestManholeTo(x, y) {
@@ -1670,6 +1692,360 @@ function initWorld() {
         poolIndex,
         hatchAt: now + FISH_EGG_HATCH_MS,
       });
+      this.tryAssignStallShrimpPull(this.pondFishEggs[this.pondFishEggs.length - 1], "fish");
+    }
+
+    restoreShrimpBobAtSite(site) {
+      const npc = site?.npc;
+      if (!npc?.active) return;
+      this.tweens.killTweensOf(npc);
+      npc.setPosition(site.npcHomeX, site.npcHomeY);
+      this.tweens.add({
+        targets: npc,
+        y: site.npcHomeY - 2,
+        duration: 720,
+        yoyo: true,
+        repeat: -1,
+        ease: "Sine.inOut",
+      });
+    }
+
+    cancelStallShrimpEggPull(egg, restoreShrimp) {
+      const sp = egg?.stallPull;
+      if (!sp) return;
+      try {
+        sp.rope?.destroy();
+      } catch {
+        /* noop */
+      }
+      const site = sp.site;
+      if (site) {
+        site.busy = false;
+        if (site.npc?._stallPullEggRef === egg) site.npc._stallPullEggRef = null;
+        if (restoreShrimp && site.npc?.active) {
+          site.npc.setPosition(site.npcHomeX, site.npcHomeY);
+          this.restoreShrimpBobAtSite(site);
+        }
+      }
+      delete egg.stallPull;
+    }
+
+    /**
+     * 单摊蛋篓集满：先尽数孵化蜥蜴（上限内），再逐条孵化小鱼并由该摊小龙虾吃掉。
+     */
+    /** 摊前已收集蛋的展示：排布在摊位标题下方（避免挡住帖子标题）：两排各 5，鱼卵黄圆、蜥蜴蛋贴图 */
+    createStallBasketEggIcon(site, slotIndex, kind) {
+      const ps = this.plazaScale || 1;
+      const col = slotIndex % 5;
+      const row = Math.floor(slotIndex / 5);
+      const spacing = 16 * ps;
+      const rowGap = 12 * ps;
+      const cx = site.stallX + (col - 2) * spacing;
+      const baseY = site.stallY + 24 * ps;
+      const cy = baseY + row * rowGap;
+      if (kind === "fish") {
+        const r = Math.max(2.6, 3 * ps);
+        return this.add
+          .circle(cx, cy, r, 0xfffacd, 0.92)
+          .setStrokeStyle(1, 0xc9a227, 0.85)
+          .setDepth(8.55);
+      }
+      return this.add
+        .image(cx, cy, "lizardEgg")
+        .setOrigin(0.5, 0.55)
+        .setScale(0.52 * Math.min(1.15, ps))
+        .setDepth(8.56);
+    }
+
+    clearStallEggBasketIcons(site, count) {
+      if (!site?.eggBasketIcons?.length) return;
+      const n = Math.min(count ?? site.eggBasketIcons.length, site.eggBasketIcons.length);
+      for (let i = 0; i < n; i++) {
+        const g = site.eggBasketIcons.shift();
+        try {
+          g?.destroy();
+        } catch {
+          /* noop */
+        }
+      }
+    }
+
+    resolveStallEggBatch(site) {
+      if (!site?.eggBasket || site.eggBasket.length < STALL_EGG_BATCH_COUNT) return;
+      const batch = site.eggBasket.splice(0, STALL_EGG_BATCH_COUNT);
+      this.clearStallEggBasketIcons(site, STALL_EGG_BATCH_COUNT);
+      const ps = this.plazaScale || 1;
+      const sx = site.stallX;
+      const sy = site.stallY;
+      const shrimp = site.npc;
+
+      site.eggBatchResolving = true;
+
+      const lizItems = batch.filter((x) => x.kind === "lizard");
+      const fishItems = batch.filter((x) => x.kind === "fish");
+
+      let li = 0;
+      for (const _ of lizItems) {
+        if (this.lizards.length >= MAX_LIZARDS) break;
+        const ox = ((li % 5) - 2) * 9 * ps;
+        const oy = (Math.floor(li / 5) % 2) * 11 * ps;
+        li++;
+        this.spawnHatchLizardNear(sx + ox, sy + oy);
+      }
+
+      const scaleMul = Math.min(1.15, ps * 0.72);
+      const babySc = 0.38 * scaleMul;
+
+      let fi = 0;
+      const eatNextFish = () => {
+        if (!shrimp?.active) {
+          site.eggBatchResolving = false;
+          return;
+        }
+        if (fi >= fishItems.length) {
+          site.eggBatchResolving = false;
+          return;
+        }
+        const hx = sx - 5 * ps;
+        const hy = sy + 14 * ps;
+        const snack = this.add
+          .image(hx, hy, "pondFish")
+          .setOrigin(0.5)
+          .setDepth(8)
+          .setScale(babySc);
+        snack.setTint(POND_FISH_TINTS[Math.floor(Math.random() * POND_FISH_TINTS.length)]);
+        fi++;
+        this.tweens.add({
+          targets: snack,
+          x: shrimp.x,
+          y: shrimp.y,
+          duration: 320,
+          ease: "Cubic.in",
+          onComplete: () => {
+            try {
+              snack.destroy();
+            } catch {
+              /* noop */
+            }
+            this.time.delayedCall(400, eatNextFish);
+          },
+        });
+      };
+
+      if (fishItems.length) {
+        eatNextFish();
+      } else {
+        site.eggBatchResolving = false;
+      }
+    }
+
+    tryAssignStallShrimpPull(egg, kind) {
+      if (!egg?.sprite?.active) return;
+      if (egg.stallPull) return;
+      const sites = this.stallShrimpSites;
+      if (!sites?.length) return;
+      const ex = egg.sprite.x;
+      const ey = egg.sprite.y;
+      let best = null;
+      let bestD = Infinity;
+      for (const site of sites) {
+        if (!site.npc?.active || site.busy || site.eggBatchResolving) continue;
+        const d = Math.hypot(site.npc.x - ex, site.npc.y - ey);
+        if (d < bestD) {
+          bestD = d;
+          best = site;
+        }
+      }
+      if (!best) return;
+      const rope = this.add.graphics().setDepth(6.25);
+      this.tweens.killTweensOf(best.npc);
+      best.busy = true;
+      best.npc._stallPullEggRef = egg;
+      const ps = this.plazaScale || 1;
+      /** @type {{ phase: string, site: object, rope: Phaser.GameObjects.Graphics, stallX: number, stallY: number, shoreX?: number, shoreY?: number }} */
+      const pull = {
+        phase: "pre_rope",
+        site: best,
+        rope,
+        stallX: best.stallX,
+        stallY: best.stallY,
+      };
+      // 鱼卵：先到池塘边（岸上的落脚点），再甩绳；蜥蜴蛋：先到蛋旁（无绳），再甩绳（与鱼卵同两段节奏）
+      if (kind === "fish") {
+        const pool = this.plazaPools?.[egg.poolIndex];
+        if (pool && this.pointInPlazaPool(pool, ex, ey)) {
+          const nb = this.nearestPointOnPlazaPoolBoundary(pool, ex, ey);
+          if (nb) {
+            const c = this.poolCenter(pool);
+            let ox = nb.x - c.x;
+            let oy = nb.y - c.y;
+            const olen = Math.hypot(ox, oy) || 1;
+            ox /= olen;
+            oy /= olen;
+            const landPad = 10 * ps;
+            const cp = this.clampPosToPlaza(nb.x + ox * landPad, nb.y + oy * landPad);
+            pull.phase = "to_bank";
+            pull.shoreX = cp.x;
+            pull.shoreY = cp.y;
+          }
+        }
+      }
+      egg.stallPull = pull;
+    }
+
+    updateStallShrimpEggPulls(now, dt) {
+      const ps = this.plazaScale || 1;
+      const spd = STALL_SHRIMP_PULL_SPEED * ps;
+      const apprD = STALL_SHRIMP_APPROACH_DIST * ps;
+      const delivD = STALL_EGG_DELIVER_DIST * ps;
+
+      const drawRope = (rope, ax, ay, bx, by) => {
+        if (!rope?.active) return;
+        rope.clear();
+        rope.lineStyle(Math.max(1, Math.round(2 * Math.min(ps, 1.2))), 0x5c4030, 0.92);
+        rope.lineBetween(ax, ay, bx, by);
+      };
+
+      const deliverEgg = (egg, site, kind) => {
+        const sp = egg.stallPull;
+        try {
+          sp?.rope?.destroy();
+        } catch {
+          /* noop */
+        }
+        site.busy = false;
+        if (site.npc?._stallPullEggRef === egg) site.npc._stallPullEggRef = null;
+        delete egg.stallPull;
+
+        if (kind === "fish") {
+          const ix = this.pondFishEggs.indexOf(egg);
+          if (ix >= 0) this.pondFishEggs.splice(ix, 1);
+          site.eggBasket.push({ kind: "fish", poolIndex: egg.poolIndex });
+        } else {
+          const ix = this.lizardEggs.indexOf(egg);
+          if (ix >= 0) this.lizardEggs.splice(ix, 1);
+          site.eggBasket.push({ kind: "lizard" });
+        }
+        try {
+          egg.sprite.destroy();
+        } catch {
+          /* noop */
+        }
+
+        if (site.npc?.active) {
+          site.npc.setPosition(site.npcHomeX, site.npcHomeY);
+          this.restoreShrimpBobAtSite(site);
+        }
+        const slot = site.eggBasket.length - 1;
+        const icon = this.createStallBasketEggIcon(site, slot, kind === "fish" ? "fish" : "lizard");
+        if (!site.eggBasketIcons) site.eggBasketIcons = [];
+        site.eggBasketIcons.push(icon);
+
+        if (site.eggBasket.length >= STALL_EGG_BATCH_COUNT) {
+          this.resolveStallEggBatch(site);
+        }
+      };
+
+      const stepEgg = (egg, kind) => {
+        const sp = egg.stallPull;
+        if (!sp) return;
+        if (!egg.sprite?.active) {
+          this.cancelStallShrimpEggPull(egg, false);
+          return;
+        }
+        const site = sp.site;
+        const npc = site?.npc;
+        if (!npc?.active) {
+          this.cancelStallShrimpEggPull(egg, false);
+          return;
+        }
+
+        const ex = egg.sprite.x;
+        const ey = egg.sprite.y;
+        const sx = npc.x;
+        const sy = npc.y;
+
+        if (sp.phase === "to_bank") {
+          const tx = sp.shoreX ?? ex;
+          const ty = sp.shoreY ?? ey;
+          const dx = tx - sx;
+          const dy = ty - sy;
+          const len = Math.hypot(dx, dy) || 1;
+          if (len < apprD * 0.92) {
+            sp.phase = "drag";
+          } else {
+            const step = Math.min(spd * dt, len - apprD * 0.35);
+            npc.setPosition(sx + (dx / len) * step, sy + (dy / len) * step);
+            this.clampSpriteToPlaza(npc, false);
+            if (Math.abs(dx) > 0.35) npc.setFlipX(dx < 0);
+          }
+          try {
+            sp.rope?.clear();
+          } catch {
+            /* noop */
+          }
+          return;
+        }
+
+        if (sp.phase === "pre_rope") {
+          const dx = ex - sx;
+          const dy = ey - sy;
+          const len = Math.hypot(dx, dy) || 1;
+          if (len < apprD) {
+            sp.phase = "drag";
+          } else {
+            const step = Math.min(spd * dt, len - apprD * 0.4);
+            npc.setPosition(sx + (dx / len) * step, sy + (dy / len) * step);
+            this.clampSpriteToPlaza(npc, false);
+            if (Math.abs(dx) > 0.35) npc.setFlipX(dx < 0);
+          }
+          try {
+            sp.rope?.clear();
+          } catch {
+            /* noop */
+          }
+          return;
+        }
+
+        const stx = sp.stallX;
+        const sty = sp.stallY;
+        // 龙虾向摊位走
+        const sdx = stx - npc.x;
+        const sdy = sty - npc.y;
+        const slen = Math.hypot(sdx, sdy) || 1;
+        const stepS = Math.min(spd * dt, slen);
+        npc.setPosition(npc.x + (sdx / slen) * stepS, npc.y + (sdy / slen) * stepS);
+        this.clampSpriteToPlaza(npc, false);
+        if (Math.abs(sdx) > 0.35) npc.setFlipX(sdx < 0);
+
+        // 蛋被龙虾拖着走：沿龙虾→蛋方向，保持绳长距离跟随
+        const ropeLen = STALL_SHRIMP_APPROACH_DIST * ps;
+        const nsx = npc.x;
+        const nsy = npc.y;
+        const toEggX = ex - nsx;
+        const toEggY = ey - nsy;
+        const toEggLen = Math.hypot(toEggX, toEggY) || 1;
+        // 蛋保持在龙虾身后 ropeLen 距离处
+        const targetEX = nsx + (toEggX / toEggLen) * ropeLen;
+        const targetEY = nsy + (toEggY / toEggLen) * ropeLen;
+        egg.sprite.setPosition(targetEX, targetEY);
+        const ec = this.clampPosToPlaza(egg.sprite.x, egg.sprite.y, egg.sprite, true);
+        egg.sprite.setPosition(ec.x, ec.y);
+
+        drawRope(sp.rope, npc.x, npc.y, egg.sprite.x, egg.sprite.y);
+
+        // 龙虾到达摊位附近时交付蛋
+        const dsx = npc.x - stx;
+        const dsy = npc.y - sty;
+        if (Math.hypot(dsx, dsy) < delivD) deliverEgg(egg, site, kind);
+      };
+
+      for (const e of this.pondFishEggs) {
+        if (e.stallPull) stepEgg(e, "fish");
+      }
+      for (const e of this.lizardEggs) {
+        if (e.stallPull) stepEgg(e, "lizard");
+      }
     }
 
     tryPondFishBreed(now) {
@@ -1739,10 +2115,12 @@ function initWorld() {
           this.pondFishEggs.splice(ei, 1);
           continue;
         }
+        if (e.stallPull) continue;
         if (now < e.hatchAt) continue;
         const pi = e.poolIndex;
         const hx = e.sprite.x;
         const hy = e.sprite.y;
+
         e.sprite.destroy();
         this.pondFishEggs.splice(ei, 1);
         if (this.countFishInPool(pi) < MAX_FISH_PER_POOL) {
@@ -2792,6 +3170,7 @@ function initWorld() {
       const dt = Math.min((delta || 16) / 1000, 0.045);
       this.updatePlazaPoolFlow(now);
       this.updateFountainWater(now);
+      this.updateStallShrimpEggPulls(now, dt);
       this.updatePondFish(now, dt);
       this.updateFangBoss(now, dt);
       this.updatePlazaChallengersBattle(now, dt);
@@ -2822,6 +3201,7 @@ function initWorld() {
 
       for (let ei = this.lizardEggs.length - 1; ei >= 0; ei--) {
         const egg = this.lizardEggs[ei];
+        if (egg.stallPull) continue;
         if (now < egg.hatchAt) continue;
         let room = MAX_LIZARDS - this.lizards.length;
         if (room > 0) {
@@ -2852,6 +3232,7 @@ function initWorld() {
             const ey = lz.sprite.y + (Math.random() - 0.5) * 18;
             const ec = this.clampPosToPlaza(ex, ey);
             this.lizardEggs.push(this.createLizardEggAt(ec.x, ec.y, now));
+            this.tryAssignStallShrimpPull(this.lizardEggs[this.lizardEggs.length - 1], "lizard");
           }
         }
       }
@@ -2984,6 +3365,7 @@ function initWorld() {
           for (let gi = this.lizardEggs.length - 1; gi >= 0; gi--) {
             const egg = this.lizardEggs[gi];
             if (Math.hypot(egg.sprite.x - m.sprite.x, egg.sprite.y - m.sprite.y) < EGG_EAT_DIST) {
+              this.cancelStallShrimpEggPull(egg, true);
               egg.sprite.destroy();
               this.lizardEggs.splice(gi, 1);
               m.nextEggEatAt = now + MOUSE_SNAKE_EGG_EAT_COOLDOWN_MS;
@@ -3287,6 +3669,7 @@ function initWorld() {
           for (let gi = this.lizardEggs.length - 1; gi >= 0; gi--) {
             const egg = this.lizardEggs[gi];
             if (Math.hypot(egg.sprite.x - sp.x, egg.sprite.y - sp.y) < EGG_EAT_DIST) {
+              this.cancelStallShrimpEggPull(egg, true);
               egg.sprite.destroy();
               this.lizardEggs.splice(gi, 1);
               snk.nextEatEggAt = now + MOUSE_SNAKE_EGG_EAT_COOLDOWN_MS;
@@ -3493,16 +3876,6 @@ function initWorld() {
             preyY = lsp.y;
           }
         }
-        for (const npc of this.boothNpcs) {
-          if (!npc || !npc.active) continue;
-          const d = Math.hypot(npc.x - fx, npc.y - fy);
-          if (d < bestFd) {
-            bestFd = d;
-            preyX = npc.x;
-            preyY = npc.y;
-          }
-        }
-
         let ftx;
         let fty;
         if (preyX != null) {
@@ -3567,20 +3940,6 @@ function initWorld() {
                 if (this.arboreal && this.arboreal.liz === lz) this.arboreal = null;
                 lsp.destroy();
                 this.lizards.splice(li, 1);
-                ate = true;
-                break;
-              }
-            }
-          }
-          if (!ate) {
-            for (let ni = this.boothNpcs.length - 1; ni >= 0; ni--) {
-              const npc = this.boothNpcs[ni];
-              if (!npc || !npc.active) continue;
-              if (Math.hypot(npc.x - fp.x, npc.y - fp.y) < FROG_EAT_DIST) {
-                const bi = this.booths.indexOf(npc);
-                if (bi >= 0) this.booths.splice(bi, 1);
-                npc.destroy();
-                this.boothNpcs.splice(ni, 1);
                 ate = true;
                 break;
               }
@@ -4461,9 +4820,17 @@ function initWorld() {
     refreshBooths(posts, matches, polls, zoneFilter) {
       this._boothGen = (this._boothGen || 0) + 1;
       const boothGen = this._boothGen;
+      for (const e of [...this.pondFishEggs, ...this.lizardEggs]) {
+        if (e.stallPull) this.cancelStallShrimpEggPull(e, false);
+      }
+      for (const s of this.stallShrimpSites || []) {
+        this.clearStallEggBasketIcons(s, s.eggBasketIcons?.length ?? 0);
+        if (s.eggBasket) s.eggBasket.length = 0;
+      }
       for (const b of this.booths) b.destroy();
       this.booths = [];
       this.boothNpcs = [];
+      this.stallShrimpSites = [];
 
       const postItems = posts || [];
       const matchItems = matches || [];
@@ -4511,7 +4878,21 @@ function initWorld() {
           repeat: -1,
           ease: "Sine.inOut",
         });
-        this.boothNpcs.push(npc);
+        // 竞技场摊位的五子棋棋子图为装饰，不参与 Boss「撞飞陆生小动物」逻辑
+        if (z !== "match") {
+          this.boothNpcs.push(npc);
+          this.stallShrimpSites.push({
+            npc,
+            stallX: x,
+            stallY: y,
+            npcHomeX: npc.x,
+            npcHomeY: npc.y,
+            busy: false,
+            eggBasket: [],
+            eggBasketIcons: [],
+            eggBatchResolving: false,
+          });
+        }
 
         const bubble = this.add
           .text(x, y - 30 * PS, label, {
@@ -4550,6 +4931,17 @@ function initWorld() {
           ease: "Sine.inOut",
         });
         this.boothNpcs.push(npc);
+        this.stallShrimpSites.push({
+          npc,
+          stallX: x,
+          stallY: y,
+          npcHomeX: npc.x,
+          npcHomeY: npc.y,
+          busy: false,
+          eggBasket: [],
+          eggBasketIcons: [],
+          eggBatchResolving: false,
+        });
         this.booths.push(npc);
 
         const bubble = this.add
