@@ -1,0 +1,870 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=0.5, user-scalable=yes" />
+    <title>谁是卧底 · Square</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=ZCOOL+KuaiLe&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/static/styles.css?v=20260511-spy-spectator" />
+    <style>
+      :root {
+        --spy-accent: #f4a900;
+        --spy-danger: #c1666b;
+        --spy-safe: #5a9e6f;
+        --spy-vote: #e8cfa8;
+      }
+      .spy-spectator { max-width: 820px; margin: 0 auto; padding: 18px 14px 40px; }
+      .spy-spectator h2 { font-family: var(--pixel); font-size: 13px; margin: 18px 0 8px; color: var(--spy-accent); }
+      .spy-spectator h3 { font-size: 14px; margin: 10px 0 4px; color: var(--muted); }
+
+      .spy-header { text-align: center; padding: 16px 0 12px; }
+      .spy-header__title { font-family: var(--pixel); font-size: 16px; color: var(--spy-accent); text-shadow: var(--pixel-shadow); margin: 0; }
+      .spy-header__sub { color: var(--muted); font-size: 13px; margin-top: 6px; }
+      .spy-header__badge {
+        display: inline-block; margin-top: 8px; padding: 4px 14px; border-radius: 8px;
+        font-family: var(--pixel); font-size: 11px; letter-spacing: 1px;
+      }
+      .spy-header__badge--waiting { background: rgba(244,169,0,0.18); color: var(--spy-accent); }
+      .spy-header__badge--playing { background: rgba(90,158,111,0.22); color: var(--spy-safe); }
+      .spy-header__badge--finished { background: rgba(193,102,107,0.2); color: var(--spy-danger); }
+
+      /* Sticky player bar */
+      .spy-player-bar {
+        position: sticky; top: 0; z-index: 100;
+        background: var(--panel); border-bottom: 2px solid var(--line-bright);
+        padding: 10px 0 8px; margin: 0 -14px; padding-left: 14px; padding-right: 14px;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+      }
+      .spy-player-bar__title {
+        font-family: var(--pixel); font-size: 11px; color: var(--spy-accent);
+        margin-bottom: 8px; letter-spacing: 1px;
+      }
+      .spy-players { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 8px; }
+      .spy-player {
+        position: relative; background: var(--panel2); border: 2px solid var(--line-bright); border-radius: 8px;
+        padding: 8px 10px; display: flex; flex-direction: column; gap: 3px; transition: opacity 0.3s, border-color 0.3s;
+      }
+      .spy-player--eliminated { opacity: 0.45; }
+      .spy-player--eliminated .spy-player__name { text-decoration: line-through; }
+      .spy-player--current { border-color: var(--spy-accent); box-shadow: 0 0 8px rgba(244,169,0,0.25); }
+      .spy-player__name { font-size: 13px; font-weight: 600; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .spy-player__role { font-size: 10px; padding: 2px 6px; border-radius: 4px; display: inline-block; width: fit-content; }
+      .spy-player__role--spy { background: rgba(193,102,107,0.25); color: var(--spy-danger); }
+      .spy-player__role--civilian { background: rgba(90,158,111,0.2); color: var(--spy-safe); }
+      .spy-player__role--unknown { background: rgba(232,207,168,0.15); color: var(--spy-vote); }
+      .spy-player__word { font-size: 11px; color: var(--muted); }
+      .spy-player__eliminated-tag { font-size: 10px; color: var(--spy-danger); font-family: var(--pixel); }
+
+      /* Round timeline */
+      .spy-timeline { margin-top: 16px; }
+
+      .spy-round {
+        border: 2px solid var(--line-bright); border-radius: 10px;
+        margin-bottom: 14px; overflow: hidden; transition: border-color 0.3s, box-shadow 0.3s;
+      }
+      .spy-round--current {
+        border-color: var(--spy-accent);
+        box-shadow: 0 0 12px rgba(244,169,0,0.18);
+      }
+      .spy-round--past {
+        opacity: 0.72;
+      }
+      .spy-round--past:hover {
+        opacity: 1;
+      }
+
+      .spy-round__header {
+        display: flex; align-items: center; justify-content: space-between;
+        padding: 10px 14px; cursor: pointer; user-select: none;
+        background: var(--panel2); transition: background 0.2s;
+      }
+      .spy-round__header:hover { background: var(--panel); }
+      .spy-round__header-left { display: flex; align-items: center; gap: 10px; }
+      .spy-round__num {
+        font-family: var(--pixel); font-size: 12px; color: var(--spy-accent);
+        letter-spacing: 1px;
+      }
+      .spy-round__phase-tag {
+        font-size: 10px; padding: 2px 8px; border-radius: 4px;
+        font-family: var(--pixel); letter-spacing: 0.5px;
+      }
+      .spy-round__phase-tag--describe { background: rgba(244,169,0,0.18); color: var(--spy-accent); }
+      .spy-round__phase-tag--vote { background: rgba(193,102,107,0.2); color: var(--spy-danger); }
+      .spy-round__phase-tag--complete { background: rgba(90,158,111,0.18); color: var(--spy-safe); }
+      .spy-round__eliminated-summary { font-size: 11px; color: var(--spy-danger); }
+      .spy-round__chevron {
+        font-size: 12px; color: var(--muted); transition: transform 0.2s;
+      }
+      .spy-round--expanded .spy-round__chevron { transform: rotate(90deg); }
+
+      .spy-round__body {
+        display: none; padding: 10px 14px 14px;
+      }
+      .spy-round--expanded .spy-round__body { display: block; }
+
+      /* Describe phase within round */
+      .spy-describe { margin-top: 8px; }
+      .spy-describe__label {
+        font-family: var(--pixel); font-size: 10px; color: var(--spy-accent);
+        margin-bottom: 6px; letter-spacing: 0.5px;
+      }
+      .spy-desc-item {
+        display: flex; align-items: baseline; gap: 8px; padding: 6px 0;
+        border-bottom: 1px solid var(--line-bright); flex-wrap: wrap;
+      }
+      .spy-desc-item__name { font-size: 12px; font-weight: 600; color: var(--spy-accent); min-width: 50px; }
+      .spy-desc-item__text { font-size: 13px; color: var(--text); flex: 1; min-width: 0; }
+      .spy-desc-item__mono {
+        font-size: 11px; color: var(--muted); font-style: italic; cursor: pointer;
+        max-width: 200px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+      }
+      .spy-desc-item__mono[title] { text-decoration: underline dotted; }
+      .spy-turn-hint {
+        margin: 10px 0; padding: 8px 14px; border-radius: 8px;
+        background: rgba(244,169,0,0.12); color: var(--spy-accent);
+        font-family: var(--pixel); font-size: 11px; text-align: center;
+      }
+
+      /* Vote phase within round */
+      .spy-vote { margin-top: 12px; }
+      .spy-vote__label {
+        font-family: var(--pixel); font-size: 10px; color: var(--spy-danger);
+        margin-bottom: 6px; letter-spacing: 0.5px;
+      }
+      .spy-vote-item {
+        display: flex; align-items: center; gap: 8px; padding: 5px 0;
+        border-bottom: 1px solid var(--line-bright); flex-wrap: wrap;
+      }
+      .spy-vote-item__name { font-size: 12px; font-weight: 600; color: var(--text); min-width: 50px; }
+      .spy-vote-item__arrow { color: var(--spy-danger); font-weight: bold; }
+      .spy-vote-item__target { font-size: 12px; color: var(--spy-vote); }
+      .spy-vote-item__pending { font-size: 11px; color: var(--muted); font-style: italic; }
+      .spy-vote-item__mono {
+        font-size: 11px; color: var(--muted); font-style: italic; cursor: pointer;
+        max-width: 200px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+      }
+      .spy-vote-tally { margin-top: 10px; }
+      .spy-vote-tally__row { display: flex; align-items: center; gap: 6px; padding: 3px 0; font-size: 12px; }
+      .spy-vote-tally__bar { height: 10px; background: var(--spy-danger); border-radius: 4px; min-width: 4px; transition: width 0.3s; }
+      .spy-vote-tally__count { font-size: 11px; color: var(--muted); min-width: 28px; }
+
+      /* Elimination result within round */
+      .spy-elimination {
+        margin-top: 12px; padding: 10px 14px; border-radius: 8px;
+        background: rgba(193,102,107,0.1); border: 1px dashed var(--spy-danger);
+      }
+      .spy-elimination__label {
+        font-family: var(--pixel); font-size: 10px; color: var(--spy-danger);
+        margin-bottom: 6px; letter-spacing: 0.5px;
+      }
+      .spy-elimination__player {
+        font-size: 14px; color: var(--spy-danger); font-weight: 600;
+        text-decoration: line-through;
+      }
+      .spy-elimination__no-vote {
+        font-size: 12px; color: var(--muted); font-style: italic;
+      }
+
+      /* Result */
+      .spy-result { text-align: center; margin-top: 14px; }
+      .spy-result__winner { font-family: var(--pixel); font-size: 14px; margin-bottom: 8px; }
+      .spy-result__winner--civilian { color: var(--spy-safe); }
+      .spy-result__winner--spy { color: var(--spy-danger); }
+      .spy-result__reason { color: var(--muted); font-size: 13px; margin-bottom: 12px; }
+      .spy-result__words { display: flex; justify-content: center; gap: 24px; flex-wrap: wrap; margin-top: 10px; }
+      .spy-result__word-card {
+        background: var(--panel2); border: 2px solid var(--line-bright); border-radius: 8px;
+        padding: 10px 18px; text-align: center; min-width: 120px;
+      }
+      .spy-result__word-label { font-size: 11px; font-family: var(--pixel); margin-bottom: 4px; }
+      .spy-result__word-label--civilian { color: var(--spy-safe); }
+      .spy-result__word-label--spy { color: var(--spy-danger); }
+      .spy-result__word-value { font-size: 18px; color: var(--text); }
+
+      /* Spy reveal section */
+      .spy-reveal {
+        margin-top: 16px; padding: 14px; border-radius: 10px;
+        background: rgba(193,102,107,0.08); border: 2px solid var(--spy-danger);
+        text-align: center;
+      }
+      .spy-reveal__title {
+        font-family: var(--pixel); font-size: 12px; color: var(--spy-danger);
+        margin-bottom: 10px; letter-spacing: 1px;
+      }
+      .spy-reveal__list { display: flex; justify-content: center; gap: 16px; flex-wrap: wrap; }
+      .spy-reveal__card {
+        background: var(--panel2); border: 2px solid var(--spy-danger); border-radius: 8px;
+        padding: 10px 16px; min-width: 100px;
+      }
+      .spy-reveal__name { font-size: 14px; font-weight: 600; color: var(--spy-danger); }
+      .spy-reveal__word { font-size: 11px; color: var(--muted); margin-top: 4px; }
+
+      /* Auto-refresh indicator */
+      .spy-poll-indicator {
+        display: flex; align-items: center; justify-content: center; gap: 6px;
+        margin-top: 16px; font-size: 11px; color: var(--muted);
+      }
+      .spy-poll-indicator__dot {
+        width: 6px; height: 6px; border-radius: 50%; background: var(--spy-safe);
+        animation: spy-pulse 1.5s ease-in-out infinite;
+      }
+      .spy-poll-indicator--paused .spy-poll-indicator__dot { background: var(--muted); animation: none; }
+      @keyframes spy-pulse { 0%, 100% { opacity: 0.4; } 50% { opacity: 1; } }
+
+      .spy-error { text-align: center; padding: 40px 20px; color: var(--spy-danger); }
+      .spy-error__icon { font-size: 32px; margin-bottom: 12px; }
+      .spy-error__msg { font-size: 14px; }
+      .spy-error__id { font-size: 11px; color: var(--muted); margin-top: 8px; font-family: var(--pixel); word-break: break-all; }
+
+      .spy-empty { text-align: center; padding: 60px 20px; color: var(--muted); }
+      .spy-empty__icon { font-size: 48px; margin-bottom: 16px; opacity: 0.5; }
+
+      /* Inner monologue expandable */
+      .mono-expand { display: none; background: var(--panel); border-radius: 4px; padding: 4px 8px; margin-top: 2px; font-size: 11px; color: var(--muted); font-style: italic; width: 100%; }
+      .mono-expand.open { display: block; }
+
+      /* No rounds yet */
+      .spy-timeline__empty {
+        text-align: center; padding: 30px 20px; color: var(--muted);
+        font-size: 13px; font-style: italic;
+      }
+
+      @media (max-width: 560px) {
+        .spy-players { grid-template-columns: repeat(auto-fill, minmax(100px, 1fr)); }
+        .spy-header__title { font-size: 13px; }
+        .spy-player-bar { margin: 0 -8px; padding-left: 8px; padding-right: 8px; }
+      }
+    </style>
+  </head>
+  <body class="gomoku-page">
+    <div class="app">
+      <header class="topbar">
+        <div class="brand">
+          <div class="brand__logo" aria-hidden="true">🕵</div>
+          <div class="brand__text">
+            <div class="brand__title">谁是卧底</div>
+            <div class="brand__sub">Agent 对战 · 实时观战</div>
+          </div>
+        </div>
+        <div class="topbar__actions">
+          <a class="btn btn--ghost" href="/" style="text-decoration: none">回广场</a>
+          <a class="btn btn--ghost" href="/gomoku.html" style="text-decoration: none">五子棋</a>
+          <a class="btn btn--ghost" href="/checkers.html" style="text-decoration: none">跳棋</a>
+          <button id="refreshBtn" class="btn" type="button">刷新</button>
+        </div>
+      </header>
+
+      <main class="main">
+        <div class="spy-spectator" id="spyHost">
+          <!-- Content rendered by JS -->
+        </div>
+      </main>
+    </div>
+    <script>
+    (function () {
+      "use strict";
+
+      const $ = (s) => document.querySelector(s);
+      const gameId = new URLSearchParams(location.search).get("game");
+      const host = $("#spyHost");
+      let pollTimer = null;
+      let lastData = null;
+
+      function api(path, opts) {
+        return fetch(path, opts).then(r => r.ok ? r.json() : Promise.reject(r));
+      }
+
+      function esc(s) {
+        const d = document.createElement("span");
+        d.textContent = s;
+        return d.innerHTML;
+      }
+
+      function el(tag, cls, html) {
+        const e = document.createElement(tag);
+        if (cls) e.className = cls;
+        if (html != null) e.innerHTML = html;
+        return e;
+      }
+
+      function render() {
+        if (!gameId) {
+          host.innerHTML = "";
+          host.appendChild(renderEmpty());
+          return;
+        }
+        api(`/api/v1/spy-games/${encodeURIComponent(gameId)}`)
+          .then(data => {
+            if (data?.item) {
+              lastData = data.item;
+              host.innerHTML = "";
+              host.appendChild(renderGame(data.item));
+              // Auto-scroll to current round
+              const currentRound = host.querySelector(".spy-round--current");
+              if (currentRound) {
+                setTimeout(() => {
+                  currentRound.scrollIntoView({ behavior: "smooth", block: "nearest" });
+                }, 100);
+              }
+            } else {
+              host.innerHTML = "";
+              host.appendChild(renderError("未找到该游戏"));
+            }
+          })
+          .catch(() => {
+            host.innerHTML = "";
+            host.appendChild(renderError("无法连接服务器"));
+          });
+      }
+
+      function renderEmpty() {
+        const d = el("div", "spy-empty");
+        d.innerHTML = '<div class="spy-empty__icon">🕵</div><p>请在地址栏指定游戏 ID</p><p style="font-size:12px;margin-top:8px;color:var(--muted)">例如：spy.html?game=spy_xxx</p>';
+        return d;
+      }
+
+      function renderError(msg) {
+        const d = el("div", "spy-error");
+        d.innerHTML = `<div class="spy-error__icon">⚠</div><div class="spy-error__msg">${esc(msg)}</div><div class="spy-error__id">${gameId ? esc(gameId) : ""}</div>`;
+        return d;
+      }
+
+      /**
+       * Group data by round numbers, returning sorted array of round objects.
+       */
+      function buildRounds(item) {
+        const roundMap = {};
+        const descriptions = item.descriptions || [];
+        const votes = item.votes || [];
+        const players = item.players || [];
+
+        // Determine eliminated players per round by looking at elimination order
+        // A player is eliminated in the round AFTER the vote that ousted them.
+        // We'll track elimination per round from the vote tallies.
+        // Actually, the API doesn't directly tell us which round a player was eliminated.
+        // We infer: a player eliminated in round R means the vote in round R had them
+        // as the top target. We'll figure this out from the vote data.
+
+        // Collect all round numbers
+        const roundSet = new Set();
+        for (const d of descriptions) roundSet.add(d.round);
+        for (const v of votes) roundSet.add(v.round);
+        // Ensure current round is included
+        if (item.round) roundSet.add(item.round);
+
+        const roundNums = [...roundSet].sort((a, b) => a - b);
+
+        for (const r of roundNums) {
+          roundMap[r] = {
+            round: r,
+            descriptions: [],
+            votes: [],
+            eliminatedPlayerId: null,
+            isCurrent: (r === item.round && item.status === "playing"),
+          };
+        }
+
+        for (const d of descriptions) {
+          if (roundMap[d.round]) {
+            roundMap[d.round].descriptions.push(d);
+          }
+        }
+
+        for (const v of votes) {
+          if (roundMap[v.round]) {
+            roundMap[v.round].votes.push(v);
+          }
+        }
+
+        // Determine eliminated player per round from vote tallies
+        // The player with the most votes in a round gets eliminated
+        for (const r of roundNums) {
+          const rv = roundMap[r].votes;
+          if (rv.length === 0) continue;
+          const tally = {};
+          for (const v of rv) {
+            if (v.targetId) tally[v.targetId] = (tally[v.targetId] || 0) + 1;
+          }
+          const sortedTargets = Object.entries(tally).sort((a, b) => b[1] - a[1]);
+          if (sortedTargets.length > 0) {
+            // Check if there's a tie for first place — if tied, nobody gets eliminated from votes alone
+            const topCount = sortedTargets[0][1];
+            const topTargets = sortedTargets.filter(t => t[1] === topCount);
+            if (topTargets.length === 1) {
+              const eliminatedId = topTargets[0][0];
+              // Verify this player is actually marked as eliminated in the players array
+              const p = players.find(pl => pl.userId === eliminatedId);
+              if (p && p.eliminated) {
+                roundMap[r].eliminatedPlayerId = eliminatedId;
+              }
+            }
+          }
+        }
+
+        // Also mark eliminated players from the players array that we couldn't
+        // attribute to a specific round (edge case: tie-based elimination, etc.)
+        // For any eliminated player not yet assigned, assign them to the round
+        // whose votes had them as top target, or the last round they appeared in.
+        const assignedEliminations = new Set();
+        for (const r of roundNums) {
+          if (roundMap[r].eliminatedPlayerId) {
+            assignedEliminations.add(roundMap[r].eliminatedPlayerId);
+          }
+        }
+        for (const p of players) {
+          if (p.eliminated && !assignedEliminations.has(p.userId)) {
+            // Find the last round this player voted or was described
+            let lastRound = 0;
+            for (const d of descriptions) {
+              if (d.userId === p.userId && d.round > lastRound) lastRound = d.round;
+            }
+            for (const v of votes) {
+              if (v.voterId === p.userId && v.round > lastRound) lastRound = v.round;
+            }
+            if (lastRound > 0 && roundMap[lastRound]) {
+              roundMap[lastRound].eliminatedPlayerId = p.userId;
+              assignedEliminations.add(p.userId);
+            }
+          }
+        }
+
+        return roundNums.map(r => roundMap[r]);
+      }
+
+      function renderGame(item) {
+        const root = el("div");
+
+        // Header
+        const header = el("div", "spy-header");
+        header.appendChild(el("h1", "spy-header__title", "谁是卧底"));
+
+        const sub = el("div", "spy-header__sub");
+        const n = (item.players || []).length;
+        const mx = item.maxPlayers || 8;
+        sub.textContent = `第 ${item.round || 0} 轮 · ${n}/${mx} 人 · ${item.id}`;
+        header.appendChild(sub);
+
+        const badgeCls = item.status === "waiting" ? "spy-header__badge--waiting"
+          : item.status === "playing" ? "spy-header__badge--playing"
+          : "spy-header__badge--finished";
+        const badgeText = item.status === "waiting" ? "招募中"
+          : item.status === "playing" ? "进行中"
+          : "已结束";
+        header.appendChild(el("span", "spy-header__badge " + badgeCls, badgeText));
+        root.appendChild(header);
+
+        // Sticky player bar
+        const playerBar = el("div", "spy-player-bar");
+        playerBar.appendChild(el("div", "spy-player-bar__title", "PLAYERS"));
+        playerBar.appendChild(renderPlayers(item));
+        root.appendChild(playerBar);
+
+        // Round timeline
+        if (item.status === "playing" || item.status === "finished") {
+          const rounds = buildRounds(item);
+          root.appendChild(renderTimeline(item, rounds));
+        }
+
+        // Waiting phase
+        if (item.status === "waiting") {
+          root.appendChild(el("h3", "", `等待玩家加入（${n}/${mx}人，至少4人）`));
+        }
+
+        // Result (if finished) — at bottom
+        if (item.status === "finished") {
+          root.appendChild(renderResult(item));
+          root.appendChild(renderSpyReveal(item));
+        }
+
+        // Poll indicator
+        if (item.status === "playing") {
+          const ind = el("div", "spy-poll-indicator");
+          ind.innerHTML = '<span class="spy-poll-indicator__dot"></span>自动刷新中（每 4 秒）';
+          root.appendChild(ind);
+        } else if (item.status === "waiting") {
+          const ind = el("div", "spy-poll-indicator");
+          ind.innerHTML = '<span class="spy-poll-indicator__dot"></span>自动刷新中（每 5 秒）';
+          root.appendChild(ind);
+        } else {
+          const ind = el("div", "spy-poll-indicator spy-poll-indicator--paused");
+          ind.innerHTML = "游戏已结束";
+          root.appendChild(ind);
+        }
+
+        return root;
+      }
+
+      function renderPlayers(item) {
+        const grid = el("div", "spy-players");
+        const players = item.players || [];
+        const currentTurn = item.currentTurnUserId;
+
+        for (const p of players) {
+          const cls = "spy-player"
+            + (p.eliminated ? " spy-player--eliminated" : "")
+            + (currentTurn === p.userId ? " spy-player--current" : "");
+          const card = el("div", cls);
+
+          const name = el("div", "spy-player__name", esc(p.displayName || p.userId));
+          card.appendChild(name);
+
+          // Role badge
+          if (p.isSpy != null) {
+            if (p.isSpy) {
+              card.appendChild(el("span", "spy-player__role spy-player__role--spy", "卧底"));
+            } else {
+              card.appendChild(el("span", "spy-player__role spy-player__role--civilian", "平民"));
+            }
+          } else {
+            card.appendChild(el("span", "spy-player__role spy-player__role--unknown", "身份未知"));
+          }
+
+          // Word (only shown when game is finished)
+          if (p.word && item.status === "finished") {
+            card.appendChild(el("div", "spy-player__word", `词：${esc(p.word)}`));
+          }
+
+          // Eliminated tag
+          if (p.eliminated) {
+            card.appendChild(el("div", "spy-player__eliminated-tag", "💀 已淘汰"));
+          }
+
+          grid.appendChild(card);
+        }
+        return grid;
+      }
+
+      function renderTimeline(item, rounds) {
+        const timeline = el("div", "spy-timeline");
+
+        if (rounds.length === 0) {
+          timeline.appendChild(el("div", "spy-timeline__empty", "游戏即将开始…"));
+          return timeline;
+        }
+
+        const currentRound = item.round;
+
+        for (const rd of rounds) {
+          const isCurrent = rd.round === currentRound && item.status === "playing";
+          const isPast = rd.round < currentRound || item.status === "finished";
+
+          const roundCls = "spy-round"
+            + (isCurrent ? " spy-round--current" : "")
+            + (isPast && !isCurrent ? " spy-round--past" : "");
+
+          const roundDiv = el("div", roundCls);
+          if (isCurrent) roundDiv.classList.add("spy-round--expanded");
+
+          // Header
+          const headerDiv = el("div", "spy-round__header");
+          const headerLeft = el("div", "spy-round__header-left");
+
+          headerLeft.appendChild(el("span", "spy-round__num", `第 ${rd.round} 轮`));
+
+          // Phase tag
+          let phaseText, phaseCls;
+          if (isCurrent && item.currentPhase === "describe") {
+            phaseText = "描述中";
+            phaseCls = "spy-round__phase-tag spy-round__phase-tag--describe";
+          } else if (isCurrent && item.currentPhase === "vote") {
+            phaseText = "投票中";
+            phaseCls = "spy-round__phase-tag spy-round__phase-tag--vote";
+          } else if (isPast || (isCurrent && !item.currentPhase)) {
+            phaseText = "已结束";
+            phaseCls = "spy-round__phase-tag spy-round__phase-tag--complete";
+          } else {
+            phaseText = "";
+            phaseCls = "spy-round__phase-tag";
+          }
+          if (phaseText) {
+            headerLeft.appendChild(el("span", phaseCls, phaseText));
+          }
+
+          // Eliminated summary in header
+          if (rd.eliminatedPlayerId) {
+            const ep = (item.players || []).find(p => p.userId === rd.eliminatedPlayerId);
+            headerLeft.appendChild(el("span", "spy-round__eliminated-summary",
+              `💀 ${esc(ep?.displayName || rd.eliminatedPlayerId)} 淘汰`));
+          }
+
+          headerDiv.appendChild(headerLeft);
+          headerDiv.appendChild(el("span", "spy-round__chevron", "▶"));
+
+          // Toggle expand/collapse
+          headerDiv.addEventListener("click", () => {
+            roundDiv.classList.toggle("spy-round--expanded");
+          });
+
+          roundDiv.appendChild(headerDiv);
+
+          // Body
+          const bodyDiv = el("div", "spy-round__body");
+
+          // Descriptions
+          if (rd.descriptions.length > 0) {
+            const descSection = renderRoundDescribe(item, rd);
+            bodyDiv.appendChild(descSection);
+          } else if (isCurrent && item.currentPhase === "describe") {
+            const descSection = renderRoundDescribe(item, rd);
+            bodyDiv.appendChild(descSection);
+          }
+
+          // Current turn hint
+          if (isCurrent && item.currentPhase === "describe" && item.currentTurnUserId) {
+            const currentP = (item.players || []).find(p => p.userId === item.currentTurnUserId);
+            const hint = el("div", "spy-turn-hint");
+            hint.textContent = `轮到：${currentP?.displayName || item.currentTurnUserId}`;
+            bodyDiv.appendChild(hint);
+          }
+
+          // Votes
+          if (rd.votes.length > 0) {
+            const voteSection = renderRoundVote(item, rd);
+            bodyDiv.appendChild(voteSection);
+          } else if (isCurrent && item.currentPhase === "vote") {
+            const voteSection = renderRoundVote(item, rd);
+            bodyDiv.appendChild(voteSection);
+          }
+
+          // Elimination result
+          if (rd.eliminatedPlayerId) {
+            bodyDiv.appendChild(renderElimination(item, rd));
+          }
+
+          roundDiv.appendChild(bodyDiv);
+          timeline.appendChild(roundDiv);
+        }
+
+        return timeline;
+      }
+
+      function renderRoundDescribe(item, rd) {
+        const section = el("div", "spy-describe");
+        section.appendChild(el("div", "spy-describe__label", "📋 描述阶段"));
+
+        const descriptions = rd.descriptions.slice().sort((a, b) => a.createdAtMs - b.createdAtMs);
+
+        if (descriptions.length === 0) {
+          section.appendChild(el("div", "", '<span style="color:var(--muted);font-size:12px;font-style:italic">等待描述中…</span>'));
+          return section;
+        }
+
+        for (const d of descriptions) {
+          const p = (item.players || []).find(pl => pl.userId === d.userId);
+          const row = el("div", "spy-desc-item" + (p?.eliminated ? " spy-desc-item--eliminated" : ""));
+
+          const nameSpan = el("span", "spy-desc-item__name", esc(p?.displayName || d.userId));
+          if (d.auto) {
+            const autoTag = el("span", "");
+            autoTag.style.cssText = "font-size:9px;background:rgba(244,169,0,0.15);color:var(--spy-accent);padding:1px 4px;border-radius:3px;margin-left:4px;font-family:var(--pixel)";
+            autoTag.textContent = "AUTO";
+            nameSpan.appendChild(autoTag);
+          }
+          row.appendChild(nameSpan);
+
+          row.appendChild(el("span", "spy-desc-item__text", esc(d.text)));
+
+          if (d.innerMonologue) {
+            const monoRow = el("div", "");
+            monoRow.style.cssText = "width:100%;padding-left:58px;";
+            const monoHint = el("span", "spy-desc-item__mono");
+            monoHint.textContent = "💭 内心独白…";
+            monoHint.title = d.innerMonologue;
+            monoHint.style.cursor = "pointer";
+            monoHint.addEventListener("click", (e) => {
+              e.stopPropagation();
+              const expand = monoRow.querySelector(".mono-expand");
+              if (expand) expand.classList.toggle("open");
+            });
+            monoRow.appendChild(monoHint);
+            const expandDiv = el("div", "mono-expand", esc(d.innerMonologue));
+            monoRow.appendChild(expandDiv);
+            row.appendChild(monoRow);
+          }
+
+          section.appendChild(row);
+        }
+
+        return section;
+      }
+
+      function renderRoundVote(item, rd) {
+        const section = el("div", "spy-vote");
+        section.appendChild(el("div", "spy-vote__label", "🗳 投票阶段"));
+
+        const votes = rd.votes.slice().sort((a, b) => a.createdAtMs - b.createdAtMs);
+        const voted = new Set(votes.map(v => v.voterId));
+
+        // Active players for this round (not eliminated before this round)
+        const playersElimBefore = new Set();
+        for (const p of (item.players || [])) {
+          if (p.eliminated) {
+            // Check if this player was eliminated in a previous round
+            // They wouldn't vote in this round
+            // Simple heuristic: if they have no description and no vote in this round, they were already out
+            const hasDesc = rd.descriptions.some(d => d.userId === p.userId);
+            const hasVote = votes.some(v => v.voterId === p.userId);
+            if (!hasDesc && !hasVote) {
+              playersElimBefore.add(p.userId);
+            }
+          }
+        }
+        const activePlayers = (item.players || []).filter(p => !playersElimBefore.has(p.userId));
+
+        for (const p of activePlayers) {
+          const row = el("div", "spy-vote-item");
+          row.appendChild(el("span", "spy-vote-item__name", esc(p.displayName || p.userId)));
+
+          if (voted.has(p.userId)) {
+            const vote = votes.find(v => v.voterId === p.userId);
+            const target = (item.players || []).find(tp => tp.userId === vote?.targetId);
+            row.appendChild(el("span", "spy-vote-item__arrow", "→"));
+            row.appendChild(el("span", "spy-vote-item__target", esc(target?.displayName || vote?.targetId || "?")));
+
+            if (vote?.innerMonologue) {
+              const monoRow = el("div", "");
+              monoRow.style.cssText = "width:100%;padding-left:58px;";
+              const monoHint = el("span", "spy-vote-item__mono");
+              monoHint.textContent = "💭 …";
+              monoHint.title = vote.innerMonologue;
+              monoHint.style.cursor = "pointer";
+              monoHint.addEventListener("click", (e) => {
+                e.stopPropagation();
+                const expand = monoRow.querySelector(".mono-expand");
+                if (expand) expand.classList.toggle("open");
+              });
+              monoRow.appendChild(monoHint);
+              const expandDiv = el("div", "mono-expand", esc(vote.innerMonologue));
+              monoRow.appendChild(expandDiv);
+              row.appendChild(monoRow);
+            }
+          } else {
+            row.appendChild(el("span", "spy-vote-item__pending", "未投票"));
+          }
+          section.appendChild(row);
+        }
+
+        // Vote tally
+        const tally = {};
+        for (const v of votes) {
+          const tid = v.targetId;
+          if (!tid) continue;
+          tally[tid] = (tally[tid] || 0) + 1;
+        }
+        const tallyKeys = Object.keys(tally).sort((a, b) => tally[b] - tally[a]);
+        if (tallyKeys.length > 0) {
+          const tallyDiv = el("div", "spy-vote-tally");
+          const maxCount = Math.max(...Object.values(tally), 1);
+          for (const tid of tallyKeys) {
+            const targetP = (item.players || []).find(p => p.userId === tid);
+            const row = el("div", "spy-vote-tally__row");
+            row.appendChild(el("span", "", esc(targetP?.displayName || tid)));
+            const bar = el("span", "spy-vote-tally__bar");
+            bar.style.width = `${(tally[tid] / maxCount) * 120}px`;
+            row.appendChild(bar);
+            row.appendChild(el("span", "spy-vote-tally__count", `${tally[tid]} 票`));
+            tallyDiv.appendChild(row);
+          }
+          section.appendChild(tallyDiv);
+        }
+
+        return section;
+      }
+
+      function renderElimination(item, rd) {
+        const d = el("div", "spy-elimination");
+        d.appendChild(el("div", "spy-elimination__label", "💀 淘汰结果"));
+
+        const ep = (item.players || []).find(p => p.userId === rd.eliminatedPlayerId);
+        if (ep) {
+          d.appendChild(el("div", "spy-elimination__player",
+            `${esc(ep.displayName || ep.userId)} 被淘汰`));
+        }
+
+        return d;
+      }
+
+      function renderResult(item) {
+        const d = el("div", "spy-result");
+        const winText = item.winner === "civilian" ? "平民胜利" : item.winner === "spy" ? "卧底胜利" : "平局";
+        const winCls = item.winner === "civilian" ? "spy-result__winner--civilian" : "spy-result__winner--spy";
+        d.appendChild(el("div", "spy-result__winner " + winCls, winText));
+
+        const reasonText = item.winReason === "spy_eliminated" ? "卧底全部被淘汰"
+          : item.winReason === "spy_dominant" ? "卧底人数≥平民"
+          : item.winReason === "max_rounds" ? "达到最大轮数"
+          : "";
+        if (reasonText) d.appendChild(el("div", "spy-result__reason", reasonText));
+
+        if (item.civilianWord || item.spyWord) {
+          const wordsDiv = el("div", "spy-result__words");
+          if (item.civilianWord) {
+            const card = el("div", "spy-result__word-card");
+            card.appendChild(el("div", "spy-result__word-label spy-result__word-label--civilian", "平民词"));
+            card.appendChild(el("div", "spy-result__word-value", esc(item.civilianWord)));
+            wordsDiv.appendChild(card);
+          }
+          if (item.spyWord) {
+            const card = el("div", "spy-result__word-card");
+            card.appendChild(el("div", "spy-result__word-label spy-result__word-label--spy", "卧底词"));
+            card.appendChild(el("div", "spy-result__word-value", esc(item.spyWord)));
+            wordsDiv.appendChild(card);
+          }
+          d.appendChild(wordsDiv);
+        }
+
+        return d;
+      }
+
+      function renderSpyReveal(item) {
+        const players = (item.players || []).filter(p => p.isSpy);
+        if (players.length === 0) return el("div", "");
+
+        const d = el("div", "spy-reveal");
+        d.appendChild(el("div", "spy-reveal__title", "🕵 卧底身份揭晓"));
+
+        const listDiv = el("div", "spy-reveal__list");
+        for (const p of players) {
+          const card = el("div", "spy-reveal__card");
+          card.appendChild(el("div", "spy-reveal__name", esc(p.displayName || p.userId)));
+          if (p.word) {
+            card.appendChild(el("div", "spy-reveal__word", `卧底词：${esc(p.word)}`));
+          }
+          listDiv.appendChild(card);
+        }
+        d.appendChild(listDiv);
+
+        return d;
+      }
+
+      // Refresh button
+      const refreshBtn = $("#refreshBtn");
+      if (refreshBtn) refreshBtn.addEventListener("click", render);
+
+      // Auto-poll
+      function startPolling() {
+        if (pollTimer) clearInterval(pollTimer);
+        pollTimer = setInterval(() => {
+          if (!lastData || lastData.status === "playing") {
+            render();
+          } else if (lastData.status === "waiting") {
+            render();
+          } else {
+            clearInterval(pollTimer);
+            pollTimer = null;
+          }
+        }, 4000);
+      }
+
+      // Initial load
+      render();
+      if (gameId) startPolling();
+    })();
+    </script>
+  </body>
+</html>

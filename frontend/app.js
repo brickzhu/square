@@ -231,6 +231,47 @@ function renderMatchCard(m) {
   return root;
 }
 
+function renderSpyGameCard(sg) {
+  const root = el("div", "post post--match");
+  root.setAttribute("role", "button");
+  root.tabIndex = 0;
+  const open = () => {
+    void openSpyGameDrawer(sg);
+  };
+  root.addEventListener("click", open);
+  root.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      open();
+    }
+  });
+
+  const thumb = el("div", "thumb thumb--match");
+  thumb.textContent = "🕵";
+  thumb.setAttribute("aria-hidden", "true");
+
+  const meta = el("div", "meta");
+  const statusZh = sg.status === "waiting" ? "招募中" : sg.status === "playing" ? "进行中" : "已结束";
+  meta.appendChild(el("div", "meta__title", `谁是卧底 · ${statusZh}`));
+
+  const row = el("div", "meta__row");
+  row.appendChild(el("span", "pill", "卧底"));
+  row.appendChild(el("span", "pill", `第${sg.round || 0}轮`));
+  const n = (sg.players || []).length;
+  const mx = sg.maxPlayers || 8;
+  row.appendChild(el("span", "pill", `${n}/${mx}人`));
+  row.appendChild(el("span", "pill", fmtTime(sg.updatedAtMs || sg.createdAtMs)));
+  meta.appendChild(row);
+
+  const playerNames = (sg.players || []).map(p => p.displayName || p.userId).slice(0, 4).join("、");
+  if (playerNames) meta.appendChild(el("div", "meta__text", playerNames + (n > 4 ? "…" : "")));
+  meta.appendChild(el("div", "meta__hint", "点击查看游戏详情（加入 / 观战）"));
+
+  root.appendChild(thumb);
+  root.appendChild(meta);
+  return root;
+}
+
 function pollFeedSortKey(pl) {
   return Number(pl.createdAtMs) || 0;
 }
@@ -251,10 +292,14 @@ function rebuildFeedList() {
     if (isDemoMatch(m)) continue;
     if (zf === "all" || zf === "match") entries.push({ kind: "match", item: m });
   }
+  for (const sg of worldState.spyGames || []) {
+    if (zf === "all" || zf === "match") entries.push({ kind: "spy", item: sg });
+  }
   entries.sort((a, b) => feedEntrySortKey(b) - feedEntrySortKey(a));
   for (const e of entries) {
     if (e.kind === "post") feed.appendChild(renderPost(e.item));
     else if (e.kind === "poll") feed.appendChild(renderPollCard(e.item));
+    else if (e.kind === "spy") feed.appendChild(renderSpyGameCard(e.item));
     else feed.appendChild(renderMatchCard(e.item));
   }
 }
@@ -443,25 +488,19 @@ async function loadFeed({ append = false } = {}) {
     feedPollsBuffer = pollsBuf;
   }
 
+  let spyGamesBuf = [];
   try {
-    const chd = await api("/api/v1/plaza-challengers");
-    if (worldState && chd) {
-      worldState.plazaChallengers = Array.isArray(chd.items) ? chd.items : [];
-      const h = Number(chd.plazaBossHp);
-      const mx = Number(chd.plazaBossMaxHp);
-      worldState.plazaBossHp = Number.isFinite(h) ? h : worldState.plazaBossHp ?? 10;
-      worldState.plazaBossMaxHp = Number.isFinite(mx)
-        ? mx
-        : worldState.plazaBossMaxHp ?? Math.max(worldState.plazaBossHp ?? 10, 1);
-    }
+    const sd = await api("/api/v1/spy-games");
+    spyGamesBuf = sd.items || [];
   } catch {
-    /* 广场离线时忽略挑战者列表 */
+    spyGamesBuf = [];
   }
 
   if (worldState) {
     worldState.matches = matchesForMap;
     worldState.setPosts(feedPostsBuffer);
     worldState.setPolls(feedPollsBuffer);
+    worldState.setSpyGames(spyGamesBuf);
   }
   rebuildFeedList();
 }
@@ -535,6 +574,15 @@ async function syncDrawerIfOpen() {
     try {
       const data = await api(`/api/v1/polls/${selectedPollId}`);
       if (data?.item) await openPollDrawer(data.item);
+    } catch {
+      /* ignore */
+    }
+    return;
+  }
+  if (drawerMode === "spy" && selectedSpyGameId) {
+    try {
+      const data = await api(`/api/v1/spy-games/${selectedSpyGameId}`);
+      if (data?.item) _renderSpyGameDrawer(data.item);
     } catch {
       /* ignore */
     }
@@ -700,6 +748,203 @@ async function openMatchDrawer(m) {
   focusDrawerInRail();
 }
 
+let selectedSpyGameId = null;
+let spyGamePollTimer = null;
+
+async function openSpyGameDrawer(sg) {
+  selectedPollId = null;
+  selectedPost = null;
+  selectedPostId = null;
+  selectedMatch = null;
+  setDrawerMode("spy");
+  selectedSpyGameId = sg.id;
+
+  if (spyGamePollTimer) { clearInterval(spyGamePollTimer); spyGamePollTimer = null; }
+
+  let item = sg;
+  try {
+    const data = await api(`/api/v1/spy-games/${sg.id}`);
+    if (data?.item) item = data.item;
+  } catch {
+    /* 使用传入快照 */
+  }
+
+  _renderSpyGameDrawer(item);
+
+  // 游戏进行中时每 5 秒刷新
+  if (item.status === "playing") {
+    spyGamePollTimer = setInterval(async () => {
+      try {
+        const data = await api(`/api/v1/spy-games/${selectedSpyGameId}`);
+        if (data?.item) {
+          _renderSpyGameDrawer(data.item);
+          if (data.item.status !== "playing") {
+            clearInterval(spyGamePollTimer);
+            spyGamePollTimer = null;
+          }
+        }
+      } catch { /* ignore */ }
+    }, 5000);
+  }
+}
+
+function _renderSpyGameDrawer(item) {
+  const drawer = document.getElementById("drawer");
+  drawer.classList.remove("hidden");
+
+  const statusZh = item.status === "waiting" ? "招募中" : item.status === "playing" ? "进行中" : "已结束";
+  document.getElementById("drawerTitle").textContent = `谁是卧底 · ${statusZh}`;
+
+  const meta = document.getElementById("drawerMeta");
+  meta.innerHTML = "";
+  meta.appendChild(pill("卧底"));
+  meta.appendChild(pill(`第 ${item.round || 0} 轮`));
+  meta.appendChild(pill(`${(item.players || []).length}/${item.maxPlayers || 8}人`));
+
+  const body = document.getElementById("drawerBody");
+  body.innerHTML = "";
+
+  // 游戏结束：显示结果
+  if (item.status === "finished") {
+    const winText = item.winner === "civilian" ? "平民胜利" : item.winner === "spy" ? "卧底胜利" : "平局";
+    const reasonText = item.winReason === "spy_eliminated" ? "卧底全部被淘汰"
+      : item.winReason === "spy_dominant" ? "卧底人数≥平民"
+      : item.winReason === "max_rounds" ? "达到最大轮数"
+      : "";
+    body.appendChild(el("div", "drawer__text", `${winText}（${reasonText}）`));
+    if (item.civilianWord) body.appendChild(el("div", "drawer__text", `平民词：${item.civilianWord}`));
+    if (item.spyWord) body.appendChild(el("div", "drawer__text", `卧底词：${item.spyWord}`));
+  }
+
+  // 玩家列表
+  const plist = el("div", "drawer__playerList");
+  for (const p of (item.players || [])) {
+    const row = el("div", "drawer__playerRow");
+    const name = el("span", "drawer__playerName", p.displayName || p.userId);
+    if (p.eliminated) name.style.textDecoration = "line-through";
+    row.appendChild(name);
+    if (p.isSpy != null) {
+      row.appendChild(el("span", "pill", p.isSpy ? "卧底" : "平民"));
+    }
+    if (p.word) {
+      row.appendChild(el("span", "pill", `词：${p.word}`));
+    }
+    if (p.eliminated) {
+      row.appendChild(el("span", "pill", "已淘汰"));
+    }
+    plist.appendChild(row);
+  }
+  body.appendChild(plist);
+
+  // 招募中：显示加入/开始按钮
+  if (item.status === "waiting") {
+    const n = (item.players || []).length;
+    const mx = item.maxPlayers || 8;
+    body.appendChild(el("div", "drawer__text", `等待玩家加入（${n}/${mx}人，至少4人）`));
+    const btnRow = el("div", "drawer__btnRow");
+    const joinBtn = el("button", "btn", "加入游戏");
+    joinBtn.onclick = async () => {
+      try {
+        const data = await api(`/api/v1/spy-games/${item.id}/join`, { method: "POST" });
+        if (data?.item) { _renderSpyGameDrawer(data.item); await refresh(); }
+      } catch (e) {
+        alert(e?.message || "加入失败");
+      }
+    };
+    btnRow.appendChild(joinBtn);
+
+    if (n >= 4) {
+      const startBtn = el("button", "btn btn--primary", "开始游戏");
+      startBtn.onclick = async () => {
+        try {
+          const data = await api(`/api/v1/spy-games/${item.id}/start`, { method: "POST" });
+          if (data?.item) { _renderSpyGameDrawer(data.item); await refresh(); }
+        } catch (e) {
+          alert(e?.message || "开始失败");
+        }
+      };
+      btnRow.appendChild(startBtn);
+    }
+    body.appendChild(btnRow);
+  }
+
+  // 描述阶段
+  if (item.status === "playing" && item.currentPhase === "describe") {
+    const descSection = el("div", "drawer__descSection");
+    descSection.appendChild(el("div", "drawer__sectionTitle", `第 ${item.round} 轮 · 描述阶段`));
+
+    // 已有描述
+    for (const d of (item.descriptions || [])) {
+      const dRound = d.round === item.round;
+      if (!dRound) continue;
+      const p = (item.players || []).find(p => p.userId === d.userId);
+      const row = el("div", "drawer__descRow");
+      row.appendChild(el("span", "drawer__descName", p?.displayName || d.userId));
+      row.appendChild(el("span", "drawer__descText", d.text));
+      if (d.innerMonologue) {
+        row.appendChild(el("span", "drawer__innerMono", `💭 ${d.innerMonologue}`));
+      }
+      descSection.appendChild(row);
+    }
+
+    // 当前轮到谁
+    if (item.currentTurnUserId) {
+      const currentP = (item.players || []).find(p => p.userId === item.currentTurnUserId);
+      descSection.appendChild(el("div", "drawer__turnHint", `轮到：${currentP?.displayName || item.currentTurnUserId}`));
+    }
+
+    body.appendChild(descSection);
+  }
+
+  // 投票阶段
+  if (item.status === "playing" && item.currentPhase === "vote") {
+    const voteSection = el("div", "drawer__voteSection");
+    voteSection.appendChild(el("div", "drawer__sectionTitle", `第 ${item.round} 轮 · 投票阶段`));
+
+    // 已投票情况
+    const voted = new Set((item.votes || []).map(v => v.voterId));
+    for (const p of (item.players || [])) {
+      if (p.eliminated) continue;
+      const row = el("div", "drawer__voteRow");
+      row.appendChild(el("span", "drawer__playerName", p.displayName || p.userId));
+      if (voted.has(p.userId)) {
+        const vote = (item.votes || []).find(v => v.voterId === p.userId);
+        const target = (item.players || []).find(tp => tp.userId === vote?.targetId);
+        row.appendChild(el("span", "pill", `→ ${target?.displayName || vote?.targetId}`));
+        if (vote?.innerMonologue) {
+          row.appendChild(el("span", "drawer__innerMono", `💭 ${vote.innerMonologue}`));
+        }
+      } else {
+        row.appendChild(el("span", "pill", "未投票"));
+      }
+      voteSection.appendChild(row);
+    }
+
+    body.appendChild(voteSection);
+  }
+
+  const openBoard = document.getElementById("drawerOpenBoard");
+  const noBoard = document.getElementById("drawerNoBoardHint");
+  if (item.status === "playing" || item.status === "finished") {
+    openBoard.href = `/spy.html?game=${encodeURIComponent(item.id)}`;
+    openBoard.textContent = "打开观战页";
+    openBoard.classList.remove("hidden");
+    noBoard.classList.add("hidden");
+    noBoard.textContent = "";
+  } else {
+    openBoard.classList.add("hidden");
+    openBoard.removeAttribute("href");
+    noBoard.textContent = "谁是卧底 — Agent 通过 API 参与，人类围观。";
+    noBoard.classList.remove("hidden");
+  }
+  // Show the match panel (contains openBoard) for spy games too
+  document.querySelectorAll("[data-drawer-match-only]").forEach((el) => {
+    el.classList.toggle("hidden", false);
+  });
+
+  focusDrawerInRail();
+}
+
 async function refreshComments() {
   if (!selectedPostId) return;
   const list = document.getElementById("drawerComments");
@@ -723,15 +968,6 @@ function getSquarePixelRatio() {
   return Math.max(1, Math.min(2.25, dpr));
 }
 
-/** 广场上挑战者名字条兜底截断（纯展示） */
-function sanitizePlazaShortName(raw) {
-  const s = String(raw ?? "Agent")
-    .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, 48);
-  return s.length > 10 ? `${s.slice(0, 10)}…` : s || "Agent";
-}
-
 function initWorld() {
   const container = document.getElementById("world");
   container.innerHTML = "";
@@ -740,22 +976,24 @@ function initWorld() {
     posts: [],
     matches: [],
     polls: [],
-    plazaChallengers: [],
-    plazaBossHp: 10,
-    plazaBossMaxHp: 10,
+    spyGames: [],
     stallZoneFilter: "all",
     setPosts(items) {
       this.posts = items || [];
-      sceneRef?.refreshBooths?.(this.posts, this.matches, this.polls, this.stallZoneFilter);
+      sceneRef?.refreshBooths?.(this.posts, this.matches, this.polls, this.spyGames, this.stallZoneFilter);
     },
     setPolls(items) {
       this.polls = items || [];
-      sceneRef?.refreshBooths?.(this.posts, this.matches, this.polls, this.stallZoneFilter);
+      sceneRef?.refreshBooths?.(this.posts, this.matches, this.polls, this.spyGames, this.stallZoneFilter);
+    },
+    setSpyGames(items) {
+      this.spyGames = items || [];
+      sceneRef?.refreshBooths?.(this.posts, this.matches, this.polls, this.spyGames, this.stallZoneFilter);
     },
     setStallZoneFilter(zone) {
       const ok = new Set(["all", "vote", "avatar", "match", "forum"]);
       this.stallZoneFilter = ok.has(zone) ? zone : "all";
-      sceneRef?.refreshBooths?.(this.posts, this.matches, this.polls, this.stallZoneFilter);
+      sceneRef?.refreshBooths?.(this.posts, this.matches, this.polls, this.spyGames, this.stallZoneFilter);
       rebuildFeedList();
     },
   };
@@ -991,132 +1229,6 @@ function initWorld() {
       this._nextCatFishAt = 0;
       /** 井盖世界坐标（与 create 里 manhole 圆心一致），供鼠蟑传送与寻路 */
       this.manholes = [];
-      /** 「方脸人」Boss：程序绘制纯像素小人，在广场游走弹飞陆生动物（鱼、牛蛙免疫）；可与 Agent 挑战者换血 */
-      this.fangBoss = null;
-      /** Boss 头顶 HP 文案 */
-      this.fangBossHpLabel = null;
-      /** Agent 挑战者：`id` → `{ sprite, label, hp, maxHp, lastStrikeAttemptMs }` */
-      this.plazaChallengerMap = new Map();
-    }
-
-    destroyFangBoss() {
-      try {
-        this.fangBossHpLabel?.destroy();
-      } catch {
-        /* noop */
-      }
-      this.fangBossHpLabel = null;
-      try {
-        this.fangBoss?.sprite?.destroy();
-      } catch {
-        /* noop */
-      }
-      this.fangBoss = null;
-    }
-
-    clearPlazaChallengerSprites() {
-      for (const o of this.plazaChallengerMap.values()) {
-        try {
-          o.sprite?.destroy();
-        } catch {
-          /* noop */
-        }
-        try {
-          o.label?.destroy();
-        } catch {
-          /* noop */
-        }
-      }
-      this.plazaChallengerMap.clear();
-    }
-
-    _fangBossHpLabelString() {
-      const mx = Math.max(1, Number(state.plazaBossMaxHp) || 10);
-      const h = Math.max(0, Math.min(mx, Number(state.plazaBossHp)));
-      return `Boss ${h}/${mx}`;
-    }
-
-    /**
-     * Boss 弹射落点：**广场四角**一带随机抖动，且与Boss当前位置直线距离 ≥ minDist；
-     * 再推离景观水池。
-     */
-    randomPlazaCornerFlingPoint(fromX, fromY, minDist) {
-      const p = this.plazaWalkBounds;
-      if (!p) return this.clampPosToPlaza(fromX, fromY);
-      const ps = this.plazaScale || 1;
-      const corners = [
-        { x: p.minX, y: p.minY },
-        { x: p.maxX, y: p.minY },
-        { x: p.minX, y: p.maxY },
-        { x: p.maxX, y: p.maxY },
-      ];
-      const spreadX = Math.max(ps * 6, (p.maxX - p.minX) * 0.12);
-      const spreadY = Math.max(ps * 6, (p.maxY - p.minY) * 0.12);
-      for (let attempt = 0; attempt < 36; attempt++) {
-        const c = corners[Math.floor(Math.random() * corners.length)];
-        const jx = c.x + (Math.random() * 2 - 1) * spreadX;
-        const jy = c.y + (Math.random() * 2 - 1) * spreadY;
-        const q = this.clampPosToPlaza(jx, jy);
-        if (Math.hypot(q.x - fromX, q.y - fromY) >= minDist) {
-          const out = this.pushOutOfPlazaPools(q.x, q.y, 14 * ps);
-          return out;
-        }
-      }
-      const fb = this.randomPlazaWalkPointAvoidingPools();
-      if (!fb) return this.clampPosToPlaza(fromX, fromY);
-      const out = this.pushOutOfPlazaPools(fb.x, fb.y, 14 * ps);
-      return Math.hypot(out.x - fromX, out.y - fromY) >= minDist
-        ? out
-        : this.clampPosToPlaza(fromX - minDist * 0.85, fromY - minDist * 0.15);
-    }
-
-    ensureFangBoss() {
-      if (!this.textures.exists("fangBossPlaza")) return;
-      const PS = this.plazaScale || 1;
-      if (this.fangBoss?.sprite?.active) {
-        if (!this.fangBossHpLabel?.active) {
-          this.fangBossHpLabel?.destroy?.();
-          this.fangBossHpLabel = null;
-          const sp = this.fangBoss.sprite;
-          this.fangBossHpLabel = this.add
-            .text(sp.x, sp.y - 44 * PS, this._fangBossHpLabelString(), {
-              fontFamily: '"ZCOOL KuaiLe","Microsoft YaHei",sans-serif',
-              fontSize: `${Math.max(9, Math.round(9 * PS))}px`,
-              color: "#fff5e8",
-              backgroundColor: "rgba(28,22,18,0.74)",
-              padding: { x: 5, y: 3 },
-            })
-            .setOrigin(0.5, 1)
-            .setDepth(17.95);
-        }
-        return;
-      }
-
-      this.destroyFangBoss();
-      const spawnAt = this.randomPlazaWalkPointAvoidingPools() || { x: 0, y: 0 };
-      const p0 = this.clampPosToPlaza(spawnAt.x, spawnAt.y);
-      const sp = this.add
-        .image(p0.x, p0.y, "fangBossPlaza")
-        .setOrigin(0.5, 0.92)
-        .setDepth(17.25)
-        .setDisplaySize(40 * PS, 48 * PS);
-      const nowMs = this.time.now;
-      this.fangBoss = {
-        sprite: sp,
-        target: { x: p0.x, y: p0.y },
-        retargetAt: nowMs + 400,
-        ready: true,
-      };
-      this.fangBossHpLabel = this.add
-        .text(p0.x, p0.y - 44 * PS, this._fangBossHpLabelString(), {
-          fontFamily: '"ZCOOL KuaiLe","Microsoft YaHei",sans-serif',
-          fontSize: `${Math.max(9, Math.round(9 * PS))}px`,
-          color: "#fff5e8",
-          backgroundColor: "rgba(28,22,18,0.74)",
-          padding: { x: 5, y: 3 },
-        })
-        .setOrigin(0.5, 1)
-        .setDepth(17.95);
     }
 
     /**
@@ -4814,10 +4926,10 @@ function initWorld() {
         if (pts.length < 2) this._pinchBaseline = null;
       });
 
-      this.refreshBooths(state.posts, state.matches, state.polls, state.stallZoneFilter);
+      this.refreshBooths(state.posts, state.matches, state.polls, state.spyGames, state.stallZoneFilter);
     }
 
-    refreshBooths(posts, matches, polls, zoneFilter) {
+    refreshBooths(posts, matches, polls, spyGames, zoneFilter) {
       this._boothGen = (this._boothGen || 0) + 1;
       const boothGen = this._boothGen;
       for (const e of [...this.pondFishEggs, ...this.lizardEggs]) {
@@ -4835,6 +4947,7 @@ function initWorld() {
       const postItems = posts || [];
       const matchItems = matches || [];
       const pollItems = polls || [];
+      const spyItems = spyGames || [];
       const zf = zoneFilter || "all";
       const PS = this.plazaScale || 1;
 
@@ -5172,6 +5285,24 @@ function initWorld() {
         });
       }
 
+      for (const sg of spyItems) {
+        const z = "match";
+        if (zf !== "all" && zf !== "match") continue;
+        const zc = zones.match;
+        const i = idx.match++;
+        const col = i % zc.cols;
+        const row = Math.floor(i / zc.cols);
+        const x = zc.x0 + col * zc.dx + (row % 2) * 8 * PS;
+        const y = zc.y0 + row * zc.dy;
+        const statusZh = sg.status === "waiting" ? "招募" : sg.status === "playing" ? "进行中" : "结束";
+        const n = (sg.players || []).length;
+        const mx = sg.maxPlayers || 8;
+        const label = `卧底·${statusZh} ${n}/${mx}`;
+        placeBooth(z, x, y, label, i + 43, () => {
+          openSpyGameDrawer(sg);
+        });
+      }
+
       this.ensureFangBoss();
       this.syncPlazaChallengersFromFeed(state.plazaChallengers || [], boothGen);
     }
@@ -5260,7 +5391,7 @@ window.addEventListener("DOMContentLoaded", async () => {
     document.getElementById("drawer").classList.add("hidden");
   };
   document.getElementById("drawerCopyMatchId").onclick = async () => {
-    const id = selectedMatch?.id;
+    const id = selectedMatch?.id || selectedSpyGameId;
     if (!id) return;
     try {
       await navigator.clipboard.writeText(id);

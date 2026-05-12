@@ -62,11 +62,22 @@ MATCH_TURN_WARN_MS = int(os.environ.get("SQUARE_MATCH_TURN_WARN_MS", str(60 * 10
 POLL_DURATION_MIN_MS = int(os.environ.get("SQUARE_POLL_DURATION_MIN_MS", str(30_000)))
 POLL_DURATION_MAX_MS = int(os.environ.get("SQUARE_POLL_DURATION_MAX_MS", str(30 * 24 * 3600 * 1000)))
 
-PLAZA_CHALLENGER_TTL_MS = int(os.environ.get("SQUARE_PLAZA_CHALLENGER_TTL_MS", str(25 * 60 * 1000)))
-MAX_PLAZA_CHALLENGERS = int(os.environ.get("SQUARE_PLAZA_CHALLENGER_MAX", "12"))
-PLAZA_STRIKE_MIN_INTERVAL_MS = int(os.environ.get("SQUARE_PLAZA_STRIKE_MIN_MS", "780"))
-DEFAULT_PLAZA_CHALLENGER_HP = int(os.environ.get("SQUARE_PLAZA_CHALLENGER_HP", "8"))
-DEFAULT_PLAZA_BOSS_HP = int(os.environ.get("SQUARE_PLAZA_BOSS_HP", "10"))
+SPY_MIN_PLAYERS = int(os.environ.get("SQUARE_SPY_MIN_PLAYERS", "4"))
+SPY_MAX_PLAYERS = int(os.environ.get("SQUARE_SPY_MAX_PLAYERS", "8"))
+SPY_MAX_ROUNDS = int(os.environ.get("SQUARE_SPY_MAX_ROUNDS", "10"))
+SPY_TURN_LIMIT_MS = int(os.environ.get("SQUARE_SPY_TURN_LIMIT_MS", str(120_000)))
+
+_SPY_WORD_PAIRS: list[tuple[str, str]] = [
+    ("西瓜", "哈密瓜"), ("咖啡", "奶茶"), ("钢琴", "吉他"), ("眼镜", "墨镜"),
+    ("苹果", "梨"), ("书包", "背包"), ("毛巾", "浴巾"), ("蜡烛", "火把"),
+    ("筷子", "叉子"), ("地铁", "公交"), ("枕头", "靠垫"), ("雪人", "冰雕"),
+    ("沙发", "椅子"), ("台灯", "手电筒"), ("饺子", "馄饨"), ("玫瑰", "月季"),
+    ("鲨鱼", "鲸鱼"), ("蝴蝶", "蜻蜓"), ("蜜蜂", "黄蜂"), ("企鹅", "鸵鸟"),
+    ("老虎", "狮子"), ("面包", "蛋糕"), ("牛奶", "豆浆"), ("筷子", "勺子"),
+    ("冰箱", "空调"), ("手机", "平板"), ("电视", "电脑"), ("帽子", "头盔"),
+    ("拖鞋", "凉鞋"), ("毛笔", "钢笔"),
+]
+
 
 
 def load_db() -> dict[str, Any]:
@@ -77,8 +88,7 @@ def load_db() -> dict[str, Any]:
         "bans": [],
         "matches": [],
         "polls": [],
-        "plaza_challengers": [],
-        "plaza_boss_battle": {"hp": DEFAULT_PLAZA_BOSS_HP, "maxHp": DEFAULT_PLAZA_BOSS_HP},
+        "spy_games": [],
     }
     if not DB_PATH.exists():
         return {**defaults}
@@ -126,75 +136,6 @@ def sanitize_text(s: str, *, max_len: int = 200) -> str:
     if len(s) > max_len:
         s = s[:max_len]
     return s
-
-
-def _prune_plaza_challengers(db: dict[str, Any]) -> None:
-    """移除过期或 HP≤0 的广场挑战者，并限制条数上限。"""
-    now = now_ms()
-    chs_out: list[dict[str, Any]] = []
-    for c in db.get("plaza_challengers") or []:
-        if not isinstance(c, dict):
-            continue
-        try:
-            hp = int(c.get("hp") or 0)
-        except (TypeError, ValueError):
-            hp = 0
-        if hp <= 0:
-            continue
-        if int(c.get("expiresAtMs") or 0) <= now:
-            continue
-        chs_out.append(c)
-    db["plaza_challengers"] = chs_out[:MAX_PLAZA_CHALLENGERS]
-
-
-def _ensure_plaza_boss_state(db: dict[str, Any]) -> dict[str, Any]:
-    bb = db.setdefault(
-        "plaza_boss_battle",
-        {"hp": DEFAULT_PLAZA_BOSS_HP, "maxHp": DEFAULT_PLAZA_BOSS_HP},
-    )
-    if not isinstance(bb, dict):
-        bb = {"hp": DEFAULT_PLAZA_BOSS_HP, "maxHp": DEFAULT_PLAZA_BOSS_HP}
-        db["plaza_boss_battle"] = bb
-    mx = int(bb.get("maxHp") or DEFAULT_PLAZA_BOSS_HP)
-    mx = max(1, min(99, mx))
-    bb["maxHp"] = mx
-    try:
-        h = int(bb.get("hp"))
-    except (TypeError, ValueError):
-        h = mx
-    if h <= 0:
-        h = mx
-    elif h > mx:
-        h = mx
-    bb["hp"] = h
-    return bb
-
-
-def _find_plaza_challenger(db: dict[str, Any], cid: str) -> dict[str, Any] | None:
-    for c in db.get("plaza_challengers") or []:
-        if isinstance(c, dict) and c.get("id") == cid:
-            return c
-    return None
-
-
-def _public_plaza_challenger(ch: dict[str, Any], viewer_uid: str) -> dict[str, Any]:
-    mx = max(1, min(30, int(ch.get("maxHp") or DEFAULT_PLAZA_CHALLENGER_HP)))
-    try:
-        hp = int(ch.get("hp"))
-    except (TypeError, ValueError):
-        hp = 0
-    hp = max(0, min(mx, hp))
-    return {
-        "id": ch["id"],
-        "displayName": ch.get("displayName", ""),
-        "imageUrl": ch.get("imageUrl", ""),
-        "hp": hp,
-        "maxHp": mx,
-        "createdAtMs": ch.get("createdAtMs"),
-        "expiresAtMs": ch.get("expiresAtMs"),
-        "source": ch.get("source", ""),
-        "mine": str(ch.get("ownerUserId")) == str(viewer_uid),
-    }
 
 
 _THOUGHT_LIKE_KEYS: tuple[str, ...] = (
@@ -1907,184 +1848,436 @@ def admin_delete_poll(poll_id: str):
     return jsonify({"ok": True, "removed": 1, "pollId": pid})
 
 
-@app.post("/api/v1/plaza-challengers")
-def create_plaza_challenger():
-    """Agent（养自己像素形象等）登记为广场挑战者与方脸 Boss 对战。须非匿名 **X-User-Id**。"""
-    db = load_db()
-    _prune_plaza_challengers(db)
-    body = request.get_json(force=True, silent=False) or {}
+# ---------------------------------------------------------------------------
+# 谁是卧底 (spy game)
+# ---------------------------------------------------------------------------
 
+import random as _random
+
+
+def _find_spy_game(db: dict[str, Any], game_id: str) -> dict[str, Any] | None:
+    for g in db.get("spy_games", []):
+        if g.get("id") == game_id:
+            return g
+    return None
+
+
+def _spy_game_to_public(g: dict[str, Any], viewer_uid: str = "") -> dict[str, Any]:
+    """返回对外可见的游戏状态；玩家只能看到自己的词，卧底词不暴露给平民，反之亦然。"""
+    players = []
+    for p in (g.get("players") or []):
+        pd = {
+            "userId": p.get("userId"),
+            "displayName": p.get("displayName", ""),
+            "agentLabel": p.get("agentLabel"),
+            "eliminated": p.get("eliminated", False),
+            "isSpy": p.get("isSpy") if g.get("status") == "finished" else None,
+        }
+        if str(p.get("userId")) == str(viewer_uid) or g.get("status") == "finished":
+            pd["word"] = p.get("word")
+            pd["isSpy"] = p.get("isSpy")
+        players.append(pd)
+    pub: dict[str, Any] = {
+        "id": g.get("id"),
+        "status": g.get("status"),
+        "round": g.get("round", 0),
+        "maxRounds": g.get("maxRounds", SPY_MAX_ROUNDS),
+        "currentPhase": g.get("currentPhase"),
+        "currentTurnUserId": g.get("currentTurnUserId"),
+        "turnDeadlineMs": g.get("turnDeadlineMs"),
+        "descriptions": g.get("descriptions", []),
+        "votes": g.get("votes", []),
+        "players": players,
+        "winner": g.get("winner"),
+        "winReason": g.get("winReason"),
+        "civilianWord": g.get("civilianWord") if g.get("status") == "finished" else None,
+        "spyWord": g.get("spyWord") if g.get("status") == "finished" else None,
+        "createdAtMs": g.get("createdAtMs"),
+        "updatedAtMs": g.get("updatedAtMs"),
+    }
+    return pub
+
+
+def _check_spy_game_end(g: dict[str, Any]) -> str | None:
+    """检查游戏是否结束，返回 'civilian' / 'spy' / None。"""
+    alive = [p for p in (g.get("players") or []) if not p.get("eliminated")]
+    alive_spies = [p for p in alive if p.get("isSpy")]
+    alive_civs = [p for p in alive if not p.get("isSpy")]
+    if not alive_spies:
+        return "civilian"
+    if len(alive_spies) >= len(alive_civs):
+        return "spy"
+    return None
+
+
+def _advance_spy_game(g: dict[str, Any]) -> None:
+    """根据当前状态推进游戏：描述阶段轮转、进入投票、投票后淘汰、进入下一轮或结束。"""
+    now = now_ms()
+    alive = [p for p in (g.get("players") or []) if not p.get("eliminated")]
+
+    if g.get("currentPhase") == "describe":
+        # 检查是否所有人都描述完毕
+        described_uids = {d.get("userId") for d in g.get("descriptions", [])}
+        all_described = all(p.get("userId") in described_uids for p in alive)
+        if all_described:
+            g["currentPhase"] = "vote"
+            g["currentTurnUserId"] = None
+            g["votes"] = []
+            g["updatedAtMs"] = now
+
+    elif g.get("currentPhase") == "vote":
+        # 检查是否所有存活者都投了票
+        voted_uids = {v.get("voterId") for v in g.get("votes", [])}
+        all_voted = all(p.get("userId") in voted_uids for p in alive)
+        if all_voted:
+            # 统计票数，淘汰得票最多者
+            tally: dict[str, int] = {}
+            for v in g.get("votes", []):
+                tid = v.get("targetId")
+                if tid:
+                    tally[tid] = tally.get(tid, 0) + 1
+            if tally:
+                max_votes = max(tally.values())
+                top = [uid for uid, cnt in tally.items() if cnt == max_votes]
+                # 平票时随机选一人淘汰
+                eliminated_uid = _random.choice(top) if len(top) > 1 else top[0]
+                for p in g.get("players", []):
+                    if str(p.get("userId")) == str(eliminated_uid):
+                        p["eliminated"] = True
+                        break
+            # 检查胜负
+            winner = _check_spy_game_end(g)
+            if winner:
+                g["status"] = "finished"
+                g["winner"] = winner
+                g["winReason"] = "spy_eliminated" if winner == "civilian" else "spy_dominant"
+                g["currentPhase"] = None
+                g["currentTurnUserId"] = None
+                g["turnDeadlineMs"] = None
+            else:
+                # 进入下一轮描述
+                g["round"] = g.get("round", 0) + 1
+                if g["round"] > g.get("maxRounds", SPY_MAX_ROUNDS):
+                    g["status"] = "finished"
+                    g["winner"] = "civilian"
+                    g["winReason"] = "max_rounds"
+                    g["currentPhase"] = None
+                    g["currentTurnUserId"] = None
+                    g["turnDeadlineMs"] = None
+                else:
+                    g["currentPhase"] = "describe"
+                    # 从存活者中第一个人开始
+                    alive_now = [p for p in g.get("players", []) if not p.get("eliminated")]
+                    g["currentTurnUserId"] = alive_now[0]["userId"] if alive_now else None
+                    g["turnDeadlineMs"] = now + SPY_TURN_LIMIT_MS
+            g["updatedAtMs"] = now
+
+
+def _sync_spy_game_turn(db: dict[str, Any], g: dict[str, Any], now: int) -> bool:
+    """检查超时并自动处理。返回是否 dirty。"""
+    if g.get("status") != "playing":
+        return False
+    deadline = g.get("turnDeadlineMs")
+    if not deadline or now < deadline:
+        return False
+
+    uid = g.get("currentTurnUserId")
+    if not uid:
+        return False
+
+    # 描述超时：自动说一句模糊描述
+    if g.get("currentPhase") == "describe":
+        descs = g.get("descriptions", [])
+        descs.append({
+            "userId": uid,
+            "text": "（超时未描述）",
+            "auto": True,
+            "createdAtMs": now,
+        })
+        g["descriptions"] = descs
+        # 推进到下一个描述者
+        alive = [p for p in g.get("players", []) if not p.get("eliminated")]
+        cur_idx = next((i for i, p in enumerate(alive) if str(p.get("userId")) == str(uid)), -1)
+        next_idx = cur_idx + 1
+        if next_idx < len(alive):
+            g["currentTurnUserId"] = alive[next_idx]["userId"]
+            g["turnDeadlineMs"] = now + SPY_TURN_LIMIT_MS
+        else:
+            # 所有人描述完毕，进入投票
+            _advance_spy_game(g)
+        g["updatedAtMs"] = now
+        return True
+
+    # 投票阶段不设个人超时（整个投票阶段有一个总期限）
+    return False
+
+
+@app.post("/api/v1/spy-games")
+def create_spy_game():
+    """创建一局谁是卧底。创建者自动加入。须 X-User-Id。"""
+    db = load_db()
     uid = get_client_user_id()
     if not uid or uid == "anon":
-        return (
-            jsonify(
-                {
-                    "ok": False,
-                    "error": {"message": "stable X-User-Id required for plaza challenger (not anon)"},
-                }
-            ),
-            400,
-        )
+        return jsonify({"ok": False, "error": {"message": "X-User-Id required"}}), 400
+    body = request.get_json(force=True, silent=True) or {}
+    now = now_ms()
 
-    dn = sanitize_text(body.get("displayName", "养自己 Agent"), max_len=20)
-    src = sanitize_text(str(body.get("source", "")), max_len=48)
-    image_url = sanitize_text(body.get("imageUrl", ""), max_len=500)
-    if not image_url:
-        image_url = _save_inline_image(body)
-    if not image_url:
-        return (
-            jsonify(
-                {
-                    "ok": False,
-                    "error": {"message": "needs imageUrl or imageBase64 + imageMime"},
-                }
-            ),
-            400,
-        )
-
+    max_players = SPY_MAX_PLAYERS
     try:
-        mx_hp = int(body.get("maxHp") or DEFAULT_PLAZA_CHALLENGER_HP)
+        max_players = int(body.get("maxPlayers", SPY_MAX_PLAYERS))
     except (TypeError, ValueError):
-        mx_hp = DEFAULT_PLAZA_CHALLENGER_HP
-    mx_hp = max(3, min(20, mx_hp))
+        pass
+    max_players = max(SPY_MIN_PLAYERS, min(SPY_MAX_PLAYERS, max_players))
 
-    chs: list[dict[str, Any]] = [
-        c for c in (db.get("plaza_challengers") or []) if isinstance(c, dict) and str(c.get("ownerUserId")) != str(uid)
-    ]
-    if len(chs) >= MAX_PLAZA_CHALLENGERS:
-        return jsonify({"ok": False, "error": {"message": "plaza challengers limit reached"}}), 400
-
-    now = now_ms()
-    row: dict[str, Any] = {
-        "id": new_id("pch"),
-        "ownerUserId": uid,
-        "displayName": dn or "Agent",
-        "imageUrl": image_url,
-        "source": src or "agent",
-        "hp": mx_hp,
-        "maxHp": mx_hp,
+    game: dict[str, Any] = {
+        "id": new_id("spy"),
+        "status": "waiting",
+        "round": 0,
+        "maxRounds": SPY_MAX_ROUNDS,
+        "currentPhase": None,
+        "currentTurnUserId": None,
+        "turnDeadlineMs": None,
+        "descriptions": [],
+        "votes": [],
+        "players": [{
+            "userId": uid,
+            "displayName": sanitize_text(body.get("displayName", ""), max_len=16) or uid,
+            "agentLabel": sanitize_text(body.get("agentLabel", ""), max_len=32) or None,
+            "word": None,
+            "isSpy": None,
+            "eliminated": False,
+        }],
+        "maxPlayers": max_players,
+        "winner": None,
+        "winReason": None,
+        "civilianWord": None,
+        "spyWord": None,
         "createdAtMs": now,
-        "expiresAtMs": now + PLAZA_CHALLENGER_TTL_MS,
-        "lastStrikeMs": 0,
+        "updatedAtMs": now,
     }
-    chs.append(row)
-    db["plaza_challengers"] = chs
-    boss = _ensure_plaza_boss_state(db)
+    db.setdefault("spy_games", []).append(game)
     save_db(db)
-    return jsonify(
-        {
-            "ok": True,
-            "item": _public_plaza_challenger(row, uid),
-            "plazaBossHp": int(boss["hp"]),
-            "plazaBossMaxHp": int(boss["maxHp"]),
-        }
-    )
+    return jsonify({"ok": True, "item": _spy_game_to_public(game, uid)})
 
 
-@app.get("/api/v1/plaza-challengers")
-def list_plaza_challengers():
+@app.get("/api/v1/spy-games")
+def list_spy_games():
     db = load_db()
-    _prune_plaza_challengers(db)
-    boss = _ensure_plaza_boss_state(db)
-    save_db(db)
     uid = get_client_user_id()
-    items = [
-        _public_plaza_challenger(c, uid) for c in (db.get("plaza_challengers") or []) if isinstance(c, dict)
-    ]
-    return jsonify(
-        {
-            "ok": True,
-            "items": items,
-            "plazaBossHp": int(boss["hp"]),
-            "plazaBossMaxHp": int(boss["maxHp"]),
-        }
-    )
+    now = now_ms()
+    items = list(db.get("spy_games", []))
+    dirty = False
+    for g in items:
+        if _sync_spy_game_turn(db, g, now):
+            dirty = True
+    if dirty:
+        save_db(db)
+    items.sort(key=lambda g: int(g.get("updatedAtMs", 0)), reverse=True)
+    status_f = request.args.get("status")
+    if status_f:
+        items = [g for g in items if g.get("status") == status_f]
+    return jsonify({"items": [_spy_game_to_public(g, uid) for g in items[:50]]})
 
 
-@app.post("/api/v1/plaza-challengers/<ch_id>/strike")
-def plaza_challenger_strike(ch_id: str):
-    """与 Boss 换一次手：双方各扣 1 HP；间隔过短返回 skipped。Boss HP 归零时当场回满。"""
-    cid = sanitize_text(ch_id, max_len=80)
-    if not cid:
-        return jsonify({"ok": False, "error": {"message": "bad challenger id"}}), 400
-
+@app.get("/api/v1/spy-games/<game_id>")
+def get_spy_game(game_id: str):
     db = load_db()
-    _prune_plaza_challengers(db)
-    ch = _find_plaza_challenger(db, cid)
-    if not ch:
+    gid = sanitize_text(game_id, max_len=80)
+    g = _find_spy_game(db, gid)
+    if not g:
         return jsonify({"ok": False, "error": {"message": "not found"}}), 404
+    now = now_ms()
+    if _sync_spy_game_turn(db, g, now):
+        save_db(db)
+    uid = get_client_user_id()
+    return jsonify({"ok": True, "item": _spy_game_to_public(g, uid)})
+
+
+@app.post("/api/v1/spy-games/<game_id>/join")
+def join_spy_game(game_id: str):
+    db = load_db()
+    gid = sanitize_text(game_id, max_len=80)
+    g = _find_spy_game(db, gid)
+    if not g:
+        return jsonify({"ok": False, "error": {"message": "not found"}}), 404
+    uid = get_client_user_id()
+    if not uid or uid == "anon":
+        return jsonify({"ok": False, "error": {"message": "X-User-Id required"}}), 400
+    if g.get("status") != "waiting":
+        return jsonify({"ok": False, "error": {"message": "game already started"}}), 400
+    players = g.get("players", [])
+    if any(str(p.get("userId")) == str(uid) for p in players):
+        return jsonify({"ok": False, "error": {"message": "already joined"}}), 400
+    if len(players) >= g.get("maxPlayers", SPY_MAX_PLAYERS):
+        return jsonify({"ok": False, "error": {"message": "room full"}}), 400
+
+    body = request.get_json(force=True, silent=True) or {}
+    players.append({
+        "userId": uid,
+        "displayName": sanitize_text(body.get("displayName", ""), max_len=16) or uid,
+        "agentLabel": sanitize_text(body.get("agentLabel", ""), max_len=32) or None,
+        "word": None,
+        "isSpy": None,
+        "eliminated": False,
+    })
+    g["updatedAtMs"] = now_ms()
+    save_db(db)
+    return jsonify({"ok": True, "item": _spy_game_to_public(g, uid)})
+
+
+@app.post("/api/v1/spy-games/<game_id>/start")
+def start_spy_game(game_id: str):
+    """发起者开局：分配词语、标记卧底。须 ≥ SPY_MIN_PLAYERS 人。"""
+    db = load_db()
+    gid = sanitize_text(game_id, max_len=80)
+    g = _find_spy_game(db, gid)
+    if not g:
+        return jsonify({"ok": False, "error": {"message": "not found"}}), 404
+    uid = get_client_user_id()
+    creator = (g.get("players") or [{}])[0]
+    if str(creator.get("userId")) != str(uid):
+        return jsonify({"ok": False, "error": {"message": "only creator can start"}}), 403
+    if g.get("status") != "waiting":
+        return jsonify({"ok": False, "error": {"message": "already started"}}), 400
+    players = g.get("players", [])
+    n = len(players)
+    if n < SPY_MIN_PLAYERS:
+        return jsonify({"ok": False, "error": {"message": f"need at least {SPY_MIN_PLAYERS} players"}}), 400
 
     now = now_ms()
-    if now >= int(ch.get("expiresAtMs") or 0):
-        db["plaza_challengers"] = [c for c in (db.get("plaza_challengers") or []) if c.get("id") != cid]
-        save_db(db)
-        return jsonify({"ok": False, "error": {"message": "expired"}}), 410
+    # 随机选词对
+    pair = _random.choice(_SPY_WORD_PAIRS)
+    # 随机决定哪个是平民词哪个是卧底词
+    if _random.random() < 0.5:
+        civilian_word, spy_word = pair
+    else:
+        spy_word, civilian_word = pair
 
-    last = int(ch.get("lastStrikeMs") or 0)
-    if now - last < PLAZA_STRIKE_MIN_INTERVAL_MS:
-        boss = _ensure_plaza_boss_state(db)
-        save_db(db)
-        return jsonify(
-            {
-                "ok": True,
-                "skipped": True,
-                "item": _public_plaza_challenger(ch, get_client_user_id()),
-                "plazaBossHp": int(boss["hp"]),
-                "bossReset": False,
-            }
-        )
+    # 随机选卧底（1-2人，取决于总人数）
+    n_spies = 1 if n < 7 else 2
+    spy_indices = set(_random.sample(range(n), n_spies))
+    for i, p in enumerate(players):
+        if i in spy_indices:
+            p["isSpy"] = True
+            p["word"] = spy_word
+        else:
+            p["isSpy"] = False
+            p["word"] = civilian_word
 
-    boss = _ensure_plaza_boss_state(db)
-    ch["hp"] = max(0, int(ch["hp"]) - 1)
-    boss["hp"] = max(0, int(boss["hp"]) - 1)
-    ch["lastStrikeMs"] = now
-
-    boss_reset = False
-    if int(boss["hp"]) <= 0:
-        boss["hp"] = int(boss.get("maxHp") or DEFAULT_PLAZA_BOSS_HP)
-        boss_reset = True
-
-    removed = False
-    if int(ch["hp"]) <= 0:
-        db["plaza_challengers"] = [
-            c for c in (db.get("plaza_challengers") or []) if isinstance(c, dict) and c.get("id") != cid
-        ]
-        removed = True
-
+    g["civilianWord"] = civilian_word
+    g["spyWord"] = spy_word
+    g["status"] = "playing"
+    g["round"] = 1
+    g["currentPhase"] = "describe"
+    g["descriptions"] = []
+    g["votes"] = []
+    g["currentTurnUserId"] = players[0]["userId"]
+    g["turnDeadlineMs"] = now + SPY_TURN_LIMIT_MS
+    g["updatedAtMs"] = now
     save_db(db)
-    pub: dict[str, Any] | None = None
-    if not removed:
-        ch2 = _find_plaza_challenger(db, cid)
-        pub = _public_plaza_challenger(ch2 if ch2 else ch, get_client_user_id())
-    boss = _ensure_plaza_boss_state(db)
-    return jsonify(
-        {
-            "ok": True,
-            "exchanged": True,
-            "eliminatedChallenger": removed,
-            "item": pub,
-            "plazaBossHp": int(boss["hp"]),
-            "bossReset": boss_reset,
-        }
-    )
+    return jsonify({"ok": True, "item": _spy_game_to_public(g, uid)})
 
 
-@app.delete("/api/v1/plaza-challengers/<ch_id>")
-def delete_plaza_challenger(ch_id: str):
-    """挑战者本人放弃登场。"""
-    cid = sanitize_text(ch_id, max_len=80)
-    uid = get_client_user_id()
+@app.post("/api/v1/spy-games/<game_id>/describe")
+def spy_game_describe(game_id: str):
+    """描述阶段：当前轮到的玩家用一句话描述自己的词。"""
     db = load_db()
-    ch = _find_plaza_challenger(db, cid)
-    if not ch:
+    gid = sanitize_text(game_id, max_len=80)
+    g = _find_spy_game(db, gid)
+    if not g:
         return jsonify({"ok": False, "error": {"message": "not found"}}), 404
-    if str(ch.get("ownerUserId")) != str(uid):
-        return jsonify({"ok": False, "error": {"message": "forbidden"}}), 403
-    db["plaza_challengers"] = [
-        c for c in (db.get("plaza_challengers") or []) if isinstance(c, dict) and c.get("id") != cid
-    ]
+    uid = get_client_user_id()
+    if g.get("status") != "playing":
+        return jsonify({"ok": False, "error": {"message": "game not playing"}}), 400
+    if g.get("currentPhase") != "describe":
+        return jsonify({"ok": False, "error": {"message": "not in describe phase"}}), 400
+    if str(g.get("currentTurnUserId")) != str(uid):
+        return jsonify({"ok": False, "error": {"message": "not your turn"}}), 409
+
+    body = request.get_json(force=True, silent=True) or {}
+    text = sanitize_text(body.get("description", ""), max_len=200)
+    if not text:
+        return jsonify({"ok": False, "error": {"message": "description required"}}), 400
+
+    now = now_ms()
+    inner = sanitize_text(body.get("innerMonologue", body.get("thought", "")), max_len=500) or None
+    desc_entry = {
+        "userId": uid,
+        "text": text,
+        "innerMonologue": inner,
+        "round": g.get("round", 1),
+        "createdAtMs": now,
+    }
+    g.setdefault("descriptions", []).append(desc_entry)
+
+    # 推进到下一个存活者
+    alive = [p for p in g.get("players", []) if not p.get("eliminated")]
+    cur_idx = next((i for i, p in enumerate(alive) if str(p.get("userId")) == str(uid)), -1)
+    next_idx = cur_idx + 1
+    if next_idx < len(alive):
+        g["currentTurnUserId"] = alive[next_idx]["userId"]
+        g["turnDeadlineMs"] = now + SPY_TURN_LIMIT_MS
+    else:
+        # 本轮描述结束，进入投票
+        _advance_spy_game(g)
+    g["updatedAtMs"] = now
     save_db(db)
-    return jsonify({"ok": True})
+    return jsonify({"ok": True, "item": _spy_game_to_public(g, uid)})
+
+
+@app.post("/api/v1/spy-games/<game_id>/vote")
+def spy_game_vote(game_id: str):
+    """投票阶段：存活者投票淘汰一人。"""
+    db = load_db()
+    gid = sanitize_text(game_id, max_len=80)
+    g = _find_spy_game(db, gid)
+    if not g:
+        return jsonify({"ok": False, "error": {"message": "not found"}}), 404
+    uid = get_client_user_id()
+    if g.get("status") != "playing":
+        return jsonify({"ok": False, "error": {"message": "game not playing"}}), 400
+    if g.get("currentPhase") != "vote":
+        return jsonify({"ok": False, "error": {"message": "not in vote phase"}}), 400
+
+    players = g.get("players", [])
+    voter = next((p for p in players if str(p.get("userId")) == str(uid)), None)
+    if not voter:
+        return jsonify({"ok": False, "error": {"message": "not a player"}}), 400
+    if voter.get("eliminated"):
+        return jsonify({"ok": False, "error": {"message": "eliminated players cannot vote"}}), 400
+    # 已投票不可改
+    votes = g.get("votes", [])
+    if any(str(v.get("voterId")) == str(uid) for v in votes):
+        return jsonify({"ok": False, "error": {"message": "already voted"}}), 400
+
+    body = request.get_json(force=True, silent=True) or {}
+    target_id = sanitize_text(body.get("targetUserId", ""), max_len=80)
+    if not target_id:
+        return jsonify({"ok": False, "error": {"message": "targetUserId required"}}), 400
+    # 不能投自己
+    if str(target_id) == str(uid):
+        return jsonify({"ok": False, "error": {"message": "cannot vote yourself"}}), 400
+    # 目标必须是存活的玩家
+    target = next((p for p in players if str(p.get("userId")) == str(target_id) and not p.get("eliminated")), None)
+    if not target:
+        return jsonify({"ok": False, "error": {"message": "invalid target"}}), 400
+
+    now = now_ms()
+    inner = sanitize_text(body.get("innerMonologue", body.get("thought", "")), max_len=500) or None
+    votes.append({
+        "voterId": uid,
+        "targetId": target_id,
+        "innerMonologue": inner,
+        "round": g.get("round", 1),
+        "createdAtMs": now,
+    })
+    g["votes"] = votes
+
+    # 检查是否所有人都投完
+    _advance_spy_game(g)
+    g["updatedAtMs"] = now
+    save_db(db)
+    return jsonify({"ok": True, "item": _spy_game_to_public(g, uid)})
 
 
 @app.get("/static/<path:filename>")
