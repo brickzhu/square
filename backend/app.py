@@ -1862,21 +1862,61 @@ def _find_spy_game(db: dict[str, Any], game_id: str) -> dict[str, Any] | None:
     return None
 
 
+def _spy_descriptions_votes_for_viewer(
+    g: dict[str, Any], viewer_uid: str
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """内心独白仅本人生效；观战者（非本局玩家、含未带 X-User-Id 的 anon）可看全员独白。"""
+    uid = str(viewer_uid or "").strip()
+    player_ids = {str(p.get("userId")) for p in (g.get("players") or []) if p.get("userId")}
+    is_spectator = (not uid) or (uid == "anon") or (uid not in player_ids)
+
+    raw_desc = g.get("descriptions") or []
+    raw_votes = g.get("votes") or []
+    if is_spectator:
+        return [dict(d) for d in raw_desc], [dict(v) for v in raw_votes]
+
+    descs: list[dict[str, Any]] = []
+    for d in raw_desc:
+        dd = dict(d)
+        if str(d.get("userId")) != uid:
+            dd["innerMonologue"] = None
+        descs.append(dd)
+    votes: list[dict[str, Any]] = []
+    for v in raw_votes:
+        vv = dict(v)
+        if str(v.get("voterId")) != uid:
+            vv["innerMonologue"] = None
+        votes.append(vv)
+    return descs, votes
+
+
 def _spy_game_to_public(g: dict[str, Any], viewer_uid: str = "") -> dict[str, Any]:
-    """返回对外可见的游戏状态；玩家只能看到自己的词，卧底词不暴露给平民，反之亦然。"""
+    """返回对外可见的游戏状态。
+
+    - **进行中**：每位玩家只能看到**自己的词**；**不暴露 isSpy**（身份需从他人描述中推断，终局才揭晓）。
+    - **内心独白**：本局玩家只能看到**自己**提交过的 innerMonologue；**观战**（非该局玩家）可看全员独白。
+    - **已结束**：公开所有人的词与平民/卧底身份。
+    - **等待中**：不公开词与身份。
+    """
     players = []
+    st = g.get("status")
     for p in (g.get("players") or []):
-        pd = {
+        pd: dict[str, Any] = {
             "userId": p.get("userId"),
             "displayName": p.get("displayName", ""),
             "agentLabel": p.get("agentLabel"),
             "eliminated": p.get("eliminated", False),
-            "isSpy": p.get("isSpy") if g.get("status") == "finished" else None,
+            "isSpy": None,
+            "word": None,
         }
-        if str(p.get("userId")) == str(viewer_uid) or g.get("status") == "finished":
+        if st == "finished":
             pd["word"] = p.get("word")
             pd["isSpy"] = p.get("isSpy")
+        elif st == "playing":
+            if str(p.get("userId")) == str(viewer_uid):
+                pd["word"] = p.get("word")
         players.append(pd)
+    descs_pub, votes_pub = _spy_descriptions_votes_for_viewer(g, viewer_uid)
     pub: dict[str, Any] = {
         "id": g.get("id"),
         "status": g.get("status"),
@@ -1885,8 +1925,8 @@ def _spy_game_to_public(g: dict[str, Any], viewer_uid: str = "") -> dict[str, An
         "currentPhase": g.get("currentPhase"),
         "currentTurnUserId": g.get("currentTurnUserId"),
         "turnDeadlineMs": g.get("turnDeadlineMs"),
-        "descriptions": g.get("descriptions", []),
-        "votes": g.get("votes", []),
+        "descriptions": descs_pub,
+        "votes": votes_pub,
         "players": players,
         "winner": g.get("winner"),
         "winReason": g.get("winReason"),
@@ -1916,23 +1956,30 @@ def _advance_spy_game(g: dict[str, Any]) -> None:
     alive = [p for p in (g.get("players") or []) if not p.get("eliminated")]
 
     if g.get("currentPhase") == "describe":
-        # 检查是否所有人都描述完毕
-        described_uids = {d.get("userId") for d in g.get("descriptions", [])}
+        # 仅统计当前轮的描述（跨轮保留 descriptions，不得把上一轮发言当作本轮已描述）
+        r = int(g.get("round") or 1)
+        described_uids = {
+            d.get("userId")
+            for d in (g.get("descriptions") or [])
+            if int(d.get("round") or 1) == r
+        }
         all_described = all(p.get("userId") in described_uids for p in alive)
         if all_described:
             g["currentPhase"] = "vote"
             g["currentTurnUserId"] = None
-            g["votes"] = []
+            # 保留历史各轮投票，供观战回放；新轮投票在 vote 接口中追加并带 round
             g["updatedAtMs"] = now
 
     elif g.get("currentPhase") == "vote":
-        # 检查是否所有存活者都投了票
-        voted_uids = {v.get("voterId") for v in g.get("votes", [])}
+        # 仅统计当前轮的投票
+        r = int(g.get("round") or 1)
+        votes_round = [v for v in (g.get("votes") or []) if int(v.get("round") or 1) == r]
+        voted_uids = {v.get("voterId") for v in votes_round}
         all_voted = all(p.get("userId") in voted_uids for p in alive)
         if all_voted:
             # 统计票数，淘汰得票最多者
             tally: dict[str, int] = {}
-            for v in g.get("votes", []):
+            for v in votes_round:
                 tid = v.get("targetId")
                 if tid:
                     tally[tid] = tally.get(tid, 0) + 1
@@ -1992,6 +2039,7 @@ def _sync_spy_game_turn(db: dict[str, Any], g: dict[str, Any], now: int) -> bool
             "userId": uid,
             "text": "（超时未描述）",
             "auto": True,
+            "round": int(g.get("round") or 1),
             "createdAtMs": now,
         })
         g["descriptions"] = descs
@@ -2010,6 +2058,43 @@ def _sync_spy_game_turn(db: dict[str, Any], g: dict[str, Any], now: int) -> bool
 
     # 投票阶段不设个人超时（整个投票阶段有一个总期限）
     return False
+
+
+def _spy_deal_and_start(g: dict[str, Any]) -> None:
+    """分配平民/卧底词、清空描述与投票，进入第 1 轮描述（须已有足够人数且 players 已就位）。"""
+    now = now_ms()
+    players = g.get("players") or []
+    n = len(players)
+    if n < SPY_MIN_PLAYERS:
+        raise ValueError("spy_deal: not enough players")
+    for p in players:
+        p["eliminated"] = False
+    pair = _random.choice(_SPY_WORD_PAIRS)
+    if _random.random() < 0.5:
+        civilian_word, spy_word = pair
+    else:
+        spy_word, civilian_word = pair
+    n_spies = 1 if n < 7 else 2
+    spy_indices = set(_random.sample(range(n), n_spies))
+    for i, p in enumerate(players):
+        if i in spy_indices:
+            p["isSpy"] = True
+            p["word"] = spy_word
+        else:
+            p["isSpy"] = False
+            p["word"] = civilian_word
+    g["civilianWord"] = civilian_word
+    g["spyWord"] = spy_word
+    g["status"] = "playing"
+    g["round"] = 1
+    g["currentPhase"] = "describe"
+    g["descriptions"] = []
+    g["votes"] = []
+    g["winner"] = None
+    g["winReason"] = None
+    g["currentTurnUserId"] = players[0]["userId"]
+    g["turnDeadlineMs"] = now + SPY_TURN_LIMIT_MS
+    g["updatedAtMs"] = now
 
 
 @app.post("/api/v1/spy-games")
@@ -2144,36 +2229,7 @@ def start_spy_game(game_id: str):
     if n < SPY_MIN_PLAYERS:
         return jsonify({"ok": False, "error": {"message": f"need at least {SPY_MIN_PLAYERS} players"}}), 400
 
-    now = now_ms()
-    # 随机选词对
-    pair = _random.choice(_SPY_WORD_PAIRS)
-    # 随机决定哪个是平民词哪个是卧底词
-    if _random.random() < 0.5:
-        civilian_word, spy_word = pair
-    else:
-        spy_word, civilian_word = pair
-
-    # 随机选卧底（1-2人，取决于总人数）
-    n_spies = 1 if n < 7 else 2
-    spy_indices = set(_random.sample(range(n), n_spies))
-    for i, p in enumerate(players):
-        if i in spy_indices:
-            p["isSpy"] = True
-            p["word"] = spy_word
-        else:
-            p["isSpy"] = False
-            p["word"] = civilian_word
-
-    g["civilianWord"] = civilian_word
-    g["spyWord"] = spy_word
-    g["status"] = "playing"
-    g["round"] = 1
-    g["currentPhase"] = "describe"
-    g["descriptions"] = []
-    g["votes"] = []
-    g["currentTurnUserId"] = players[0]["userId"]
-    g["turnDeadlineMs"] = now + SPY_TURN_LIMIT_MS
-    g["updatedAtMs"] = now
+    _spy_deal_and_start(g)
     save_db(db)
     return jsonify({"ok": True, "item": _spy_game_to_public(g, uid)})
 
@@ -2245,9 +2301,14 @@ def spy_game_vote(game_id: str):
         return jsonify({"ok": False, "error": {"message": "not a player"}}), 400
     if voter.get("eliminated"):
         return jsonify({"ok": False, "error": {"message": "eliminated players cannot vote"}}), 400
-    # 已投票不可改
+    # 已投票不可改（按当前轮计）
     votes = g.get("votes", [])
-    if any(str(v.get("voterId")) == str(uid) for v in votes):
+    r = int(g.get("round") or 1)
+    if any(
+        str(v.get("voterId")) == str(uid)
+        for v in votes
+        if int(v.get("round") or 1) == r
+    ):
         return jsonify({"ok": False, "error": {"message": "already voted"}}), 400
 
     body = request.get_json(force=True, silent=True) or {}
@@ -2268,7 +2329,7 @@ def spy_game_vote(game_id: str):
         "voterId": uid,
         "targetId": target_id,
         "innerMonologue": inner,
-        "round": g.get("round", 1),
+        "round": int(g.get("round") or 1),
         "createdAtMs": now,
     })
     g["votes"] = votes
@@ -2278,6 +2339,38 @@ def spy_game_vote(game_id: str):
     g["updatedAtMs"] = now
     save_db(db)
     return jsonify({"ok": True, "item": _spy_game_to_public(g, uid)})
+
+
+@app.post("/api/v1/admin/spy-games/clear")
+def admin_spy_games_clear():
+    """清空全部谁是卧底对局。须 SQUARE_ADMIN_TOKEN + Authorization: Bearer。"""
+    deny = _require_square_admin()
+    if deny:
+        return deny
+    db = load_db()
+    items: list[dict[str, Any]] = list(db.get("spy_games", []))
+    removed = len(items)
+    db["spy_games"] = []
+    save_db(db)
+    return jsonify({"ok": True, "removed": removed})
+
+
+@app.post("/api/v1/admin/spy-games/<game_id>/replay")
+def admin_spy_game_replay(game_id: str):
+    """同一 game id 重新发词、清空描述/投票，回到第 1 轮进行中。须管理口令。"""
+    deny = _require_square_admin()
+    if deny:
+        return deny
+    db = load_db()
+    gid = sanitize_text(game_id, max_len=80)
+    g = _find_spy_game(db, gid)
+    if not g:
+        return jsonify({"ok": False, "error": {"message": "not found"}}), 404
+    if len(g.get("players") or []) < SPY_MIN_PLAYERS:
+        return jsonify({"ok": False, "error": {"message": f"need at least {SPY_MIN_PLAYERS} players"}}), 400
+    _spy_deal_and_start(g)
+    save_db(db)
+    return jsonify({"ok": True, "item": _spy_game_to_public(g, "")})
 
 
 @app.get("/static/<path:filename>")
