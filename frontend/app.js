@@ -1056,7 +1056,12 @@ function initWorld() {
   const STALL_SHRIMP_COOLOFF_SPEED = 42;
   /** 牛蛙咬死摆摊虾；死虾旁聚满蟑螂后消失并由新虾从广场外接管 */
   const FROG_KILL_STALL_SHRIMP_CHANCE = 0.5;
-  const DEAD_SHRIMP_ROACH_ATTRACT = 130;
+  /** 死虾气味：全广场蟑螂主动趋近；近尸时减速啃食，略减蜥蜴/蛇驱赶 */
+  const DEAD_SHRIMP_ROACH_SEEK_SPEED_MULT = 1.85;
+  const DEAD_SHRIMP_ROACH_EAT_DIST = 14;
+  const DEAD_SHRIMP_ROACH_FEED_SLOW_MULT = 0.2;
+  const DEAD_SHRIMP_ROACH_FLEE_REDUCE_DIST = 72;
+  const DEAD_SHRIMP_ROACH_FLEE_REDUCE = 0.38;
   const DEAD_SHRIMP_ROACH_GATHER_DIST = 40;
   const DEAD_SHRIMP_ROACH_GATHER_COUNT = 20;
   const STALL_SHRIMP_REPLACEMENT_SPEED = 34;
@@ -1339,6 +1344,7 @@ function initWorld() {
     }
 
     roachSeeksManhole(ro, now) {
+      if (this.isRoachFeedingOnDeadShrimp(ro)) return false;
       const rx = ro.sprite.x;
       const ry = ro.sprite.y;
       for (const lz of this.lizards || []) {
@@ -1869,6 +1875,32 @@ function initWorld() {
         if (Math.hypot(ro.sprite.x - x, ro.sprite.y - y) <= radius) n++;
       }
       return n;
+    }
+
+    /** 全广场最近一只倒翻死虾（牛蛙咬死等）；供蟑螂主动趋食 */
+    findNearestDeadStallShrimp(x, y) {
+      let best = null;
+      let bestD = Infinity;
+      for (const site of this.stallShrimpSites || []) {
+        if (!site.dead || !site.npc?.active) continue;
+        const sx = site.npc.x;
+        const sy = site.npc.y;
+        const d = Math.hypot(sx - x, sy - y);
+        if (d < bestD) {
+          bestD = d;
+          best = { x: sx, y: sy, dist: d };
+        }
+      }
+      return best;
+    }
+
+    /** 蟑螂贴脸啃死虾时：牛蛙/蜥蜴/蛇/老鼠/麻雀不追捕 */
+    isRoachFeedingOnDeadShrimp(ro) {
+      if (!ro?.sprite?.active) return false;
+      const dead = this.findNearestDeadStallShrimp(ro.sprite.x, ro.sprite.y);
+      if (!dead) return false;
+      const ps = this.plazaScale || 1;
+      return dead.dist < DEAD_SHRIMP_ROACH_EAT_DIST * ps + 6 * ps;
     }
 
     cancelStallShrimpPullsForSite(site, restoreShrimp) {
@@ -3550,6 +3582,7 @@ function initWorld() {
         if (now >= (m.nextRoachEatAt || 0)) {
           for (let ri = this.roaches.length - 1; ri >= 0; ri--) {
             const ro = this.roaches[ri];
+            if (this.isRoachFeedingOnDeadShrimp(ro)) continue;
             if (Math.hypot(ro.sprite.x - m.sprite.x, ro.sprite.y - m.sprite.y) < MOUSE_ROACH_EAT_DIST) {
               ro.sprite.destroy();
               this.roaches.splice(ri, 1);
@@ -3605,6 +3638,9 @@ function initWorld() {
       const ROACH_FLEE_ACCEL = 13;
       const ROACH_FLEE_SNAKE_RADIUS = 44;
       const ROACH_FLEE_SNAKE_ACCEL = 10;
+      /** 蟑螂互斥：过近时轻微推开，减轻繁殖/死虾聚集挤成一团 */
+      const ROACH_SEPARATE_RADIUS = 24;
+      const ROACH_SEPARATE_ACCEL = 6.5;
 
       for (const ro of this.roaches) {
         if (this.tryManholeTeleportRoach(ro, now)) continue;
@@ -3612,35 +3648,24 @@ function initWorld() {
         const roachPanic = this.roachSeeksManhole(ro, now);
         const roachMh = roachPanic && this.manholes.length ? this.nearestManholeTo(ro.sprite.x, ro.sprite.y) : null;
 
-        if (!roachMh && now > ro.retargetAt) {
+        let rx = ro.sprite.x;
+        let ry = ro.sprite.y;
+        const deadTarget = !roachMh ? this.findNearestDeadStallShrimp(rx, ry) : null;
+        const deadShrimpSeek = !!deadTarget;
+        const deadFeeding = this.isRoachFeedingOnDeadShrimp(ro);
+        const psRoach = this.plazaScale || 1;
+
+        if (!roachMh && !deadShrimpSeek && now > ro.retargetAt) {
           ro.retargetAt = now + 1600 + Math.random() * 2000;
           this.pickRoachTarget(ro);
         }
-        let rx = ro.sprite.x;
-        let ry = ro.sprite.y;
         let rtx;
         let rty;
         let rlen;
-        let deadShrimpSeek = false;
-        if (!roachMh) {
-          let bestDeadD = DEAD_SHRIMP_ROACH_ATTRACT;
-          let bestDeadX = null;
-          let bestDeadY = null;
-          for (const site of this.stallShrimpSites || []) {
-            if (!site.dead || !site.npc?.active) continue;
-            const d = Math.hypot(site.npc.x - rx, site.npc.y - ry);
-            if (d < bestDeadD) {
-              bestDeadD = d;
-              bestDeadX = site.npc.x;
-              bestDeadY = site.npc.y;
-            }
-          }
-          if (bestDeadX != null) {
-            deadShrimpSeek = true;
-            rtx = bestDeadX - rx;
-            rty = bestDeadY - ry;
-            rlen = Math.hypot(rtx, rty) || 1;
-          }
+        if (!roachMh && deadShrimpSeek) {
+          rtx = deadTarget.x - rx;
+          rty = deadTarget.y - ry;
+          rlen = Math.hypot(rtx, rty) || 1;
         }
         if (roachMh) {
           rtx = roachMh.x - rx;
@@ -3662,10 +3687,22 @@ function initWorld() {
             rlen = Math.hypot(rtx, rty) || 1;
           }
         }
-        const vRoachEff = roachPanic ? V_ROACH * 1.35 : deadShrimpSeek ? V_ROACH * 1.55 : V_ROACH;
+        let vRoachEff = V_ROACH;
+        if (roachPanic) vRoachEff = V_ROACH * 1.35;
+        else if (deadShrimpSeek) {
+          vRoachEff = deadFeeding
+            ? V_ROACH * DEAD_SHRIMP_ROACH_FEED_SLOW_MULT
+            : V_ROACH * DEAD_SHRIMP_ROACH_SEEK_SPEED_MULT;
+        }
         rx += (rtx / rlen) * vRoachEff * dt;
         ry += (rty / rlen) * vRoachEff * dt;
 
+        const fleeReduce = deadFeeding
+          ? 0
+          : deadShrimpSeek &&
+              deadTarget.dist < DEAD_SHRIMP_ROACH_FLEE_REDUCE_DIST * psRoach
+            ? DEAD_SHRIMP_ROACH_FLEE_REDUCE
+            : 1;
         let fx = 0;
         let fy = 0;
         for (const lz of this.lizards) {
@@ -3680,8 +3717,8 @@ function initWorld() {
         }
         const fl = Math.hypot(fx, fy);
         if (fl > 0.01) {
-          rx += (fx / fl) * ROACH_FLEE_ACCEL * dt;
-          ry += (fy / fl) * ROACH_FLEE_ACCEL * dt;
+          rx += (fx / fl) * ROACH_FLEE_ACCEL * fleeReduce * dt;
+          ry += (fy / fl) * ROACH_FLEE_ACCEL * fleeReduce * dt;
         }
         for (const snk of this.snakes) {
           const ss = snk.sprite;
@@ -3689,14 +3726,37 @@ function initWorld() {
           const dy = ry - ss.y;
           const d = Math.hypot(dx, dy);
           if (d < ROACH_FLEE_SNAKE_RADIUS && d > 0.01) {
-            rx += (dx / d) * ROACH_FLEE_SNAKE_ACCEL * dt;
-            ry += (dy / d) * ROACH_FLEE_SNAKE_ACCEL * dt;
+            rx += (dx / d) * ROACH_FLEE_SNAKE_ACCEL * fleeReduce * dt;
+            ry += (dy / d) * ROACH_FLEE_SNAKE_ACCEL * fleeReduce * dt;
           }
+        }
+
+        const sepR = ROACH_SEPARATE_RADIUS * psRoach;
+        let sx = 0;
+        let sy = 0;
+        for (const other of this.roaches) {
+          if (other === ro || !other.sprite?.active) continue;
+          const dx = rx - other.sprite.x;
+          const dy = ry - other.sprite.y;
+          const d = Math.hypot(dx, dy);
+          if (d < sepR && d > 0.01) {
+            const w = (sepR - d) / sepR;
+            sx += (dx / d) * w;
+            sy += (dy / d) * w;
+          }
+        }
+        const sl = Math.hypot(sx, sy);
+        if (sl > 0.01) {
+          const sepMult = deadFeeding ? 0.42 : 1;
+          rx += (sx / sl) * ROACH_SEPARATE_ACCEL * sepMult * dt;
+          ry += (sy / sl) * ROACH_SEPARATE_ACCEL * sepMult * dt;
         }
 
         ro.sprite.setPosition(rx, ry);
         this.clampSpriteToPlaza(ro.sprite);
-        ro.sprite.setFlipX(roachMh ? rtx < 0 : (ro.target.x - rx) < 0);
+        if (roachMh) ro.sprite.setFlipX(rtx < 0);
+        else if (deadShrimpSeek) ro.sprite.setFlipX(rtx < 0);
+        else ro.sprite.setFlipX((ro.target.x - rx) < 0);
         if (this.bounceIfNearFountain(ro.sprite, now)) {
           ro.home.x = ro.sprite.x;
           ro.home.y = ro.sprite.y;
@@ -3805,6 +3865,7 @@ function initWorld() {
           }
         }
         for (const ro of this.roaches) {
+          if (this.isRoachFeedingOnDeadShrimp(ro)) continue;
           const d = Math.hypot(ro.sprite.x - sx, ro.sprite.y - sy);
           if (d < bestPd) {
             bestPd = d;
@@ -3900,6 +3961,7 @@ function initWorld() {
         if (now >= (snk.nextEatRoachAt || 0)) {
           for (let ri = this.roaches.length - 1; ri >= 0; ri--) {
             const ro = this.roaches[ri];
+            if (this.isRoachFeedingOnDeadShrimp(ro)) continue;
             if (Math.hypot(ro.sprite.x - sp.x, ro.sprite.y - sp.y) < SNAKE_EAT_DIST) {
               ro.sprite.destroy();
               this.roaches.splice(ri, 1);
@@ -4022,6 +4084,7 @@ function initWorld() {
         let chaseRoach = null;
         let bestRoachD = ROACH_AGRO;
         for (const ro of this.roaches) {
+          if (this.isRoachFeedingOnDeadShrimp(ro)) continue;
           const rd = Math.hypot(ro.sprite.x - liz.x, ro.sprite.y - liz.y);
           if (rd < bestRoachD) {
             bestRoachD = rd;
@@ -4071,6 +4134,7 @@ function initWorld() {
 
         for (let ri = this.roaches.length - 1; ri >= 0; ri--) {
           const ro = this.roaches[ri];
+          if (this.isRoachFeedingOnDeadShrimp(ro)) continue;
           if (Math.hypot(ro.sprite.x - lx, ro.sprite.y - ly) < ROACH_EAT) {
             ro.sprite.destroy();
             this.roaches.splice(ri, 1);
@@ -4124,6 +4188,7 @@ function initWorld() {
           }
         }
         for (const ro of this.roaches) {
+          if (this.isRoachFeedingOnDeadShrimp(ro)) continue;
           const d = Math.hypot(ro.sprite.x - fx, ro.sprite.y - fy);
           if (d < bestFd) {
             bestFd = d;
@@ -4198,6 +4263,7 @@ function initWorld() {
           if (!ate) {
             for (let ri = this.roaches.length - 1; ri >= 0; ri--) {
               const ro = this.roaches[ri];
+              if (this.isRoachFeedingOnDeadShrimp(ro)) continue;
               if (Math.hypot(ro.sprite.x - fp.x, ro.sprite.y - fp.y) < FROG_EAT_DIST) {
                 ro.sprite.destroy();
                 this.roaches.splice(ri, 1);
@@ -4253,6 +4319,7 @@ function initWorld() {
               let bestRo = null;
               let bestRd = SPARROW_ROACH_HUNT_RANGE;
               for (const ro of this.roaches) {
+                if (this.isRoachFeedingOnDeadShrimp(ro)) continue;
                 const d = Math.hypot(ro.sprite.x - sx, ro.sprite.y - sy);
                 if (d < bestRd) {
                   bestRd = d;
@@ -4306,6 +4373,7 @@ function initWorld() {
           let chaseRo = null;
           let bestRd = SPARROW_ROACH_HUNT_RANGE;
           for (const ro of this.roaches) {
+            if (this.isRoachFeedingOnDeadShrimp(ro)) continue;
             const d = Math.hypot(ro.sprite.x - sx, ro.sprite.y - sy);
             if (d < bestRd) {
               bestRd = d;
@@ -4320,6 +4388,7 @@ function initWorld() {
             sy += (ty / len) * (SPARROW_LAND_SPEED + 6) * dt;
             for (let ri = this.roaches.length - 1; ri >= 0; ri--) {
               const ro = this.roaches[ri];
+              if (this.isRoachFeedingOnDeadShrimp(ro)) continue;
               if (Math.hypot(ro.sprite.x - sx, ro.sprite.y - sy) < SPARROW_ROACH_EAT_DIST) {
                 ro.sprite.destroy();
                 this.roaches.splice(ri, 1);
