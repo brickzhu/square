@@ -1049,6 +1049,33 @@ function initWorld() {
   const STALL_EGG_DELIVER_DIST = 32;
   /** 「虾扯蛋」每个摊位集满颗数后一次性结算（先蜥蜴后小鱼） */
   const STALL_EGG_BATCH_COUNT = 10;
+  /** 摆摊虾：每分钟随机一只去湖里乘凉；50% 几率吃一条小鱼 */
+  const STALL_SHRIMP_COOLOFF_INTERVAL_MS = 60_000;
+  const STALL_SHRIMP_COOLOFF_IN_POOL_MS = 10_000;
+  const STALL_SHRIMP_COOLOFF_EAT_FISH_CHANCE = 0.5;
+  const STALL_SHRIMP_COOLOFF_SPEED = 42;
+  /** 牛蛙咬死摆摊虾；死虾旁聚满蟑螂后消失并由新虾从广场外接管 */
+  const FROG_KILL_STALL_SHRIMP_CHANCE = 0.5;
+  const DEAD_SHRIMP_ROACH_ATTRACT = 130;
+  const DEAD_SHRIMP_ROACH_GATHER_DIST = 40;
+  const DEAD_SHRIMP_ROACH_GATHER_COUNT = 20;
+  const STALL_SHRIMP_REPLACEMENT_SPEED = 34;
+  /** 麻雀：共 10 只；低于 5 只时在树上产卵，30s 后仅一颗孵化 */
+  const MAX_SPARROWS = 10;
+  const SPARROW_LAY_THRESHOLD = 5;
+  const SPARROW_EGGS_PER_LAY = 4;
+  const SPARROW_EGG_HATCH_MS = 30_000;
+  const SPARROW_ROACH_HUNT_RANGE = 150;
+  const SPARROW_ROACH_EAT_DIST = 9;
+  const SPARROW_FLY_SPEED = 40;
+  const SPARROW_LAND_SPEED = 20;
+  const SPARROW_PREDATOR_AGRO = 78;
+  const SPARROW_CATCH_DIST = 14;
+  const SPARROW_CATCH_CHANCE = 0.8;
+  const SPARROW_ESCAPE_FLY_MS = 4200;
+  const SPARROW_LAND_MIN_MS = 2200;
+  const SNAKE_EAT_SPARROW_EGG_COOLDOWN_MS = 60_000;
+  const SPARROW_EGG_EAT_DIST = 12;
 
   function makeTexture(scene, key, w, h, painter) {
     const g = scene.make.graphics({ x: 0, y: 0, add: false });
@@ -1201,6 +1228,8 @@ function initWorld() {
       this.boothNpcs = [];
       /** 「虾扯蛋」：可拖蛋的摆摊小龙虾锚点（竞技场棋子摊除外）；含摊位中心与小虾归位坐标 */
       this.stallShrimpSites = [];
+      /** 下一分钟触发「随机一只摆摊虾去湖里乘凉」的时刻 */
+      this._nextStallShrimpCooloffAt = 0;
       /** 中心喷泉 (0,0) 贴图约 40px；进入此半径则弹到内层分区铺砖格上（不外飞到外围大地砖） */
       this.fountainTeleportRadius = 34;
       /** 喷泉内池动态水面（每帧 redraw） */
@@ -1229,6 +1258,13 @@ function initWorld() {
       this._nextCatFishAt = 0;
       /** 井盖世界坐标（与 create 里 manhole 圆心一致），供鼠蟑传送与寻路 */
       this.manholes = [];
+      /** 麻雀：飞行时可穿任意景物；落地捕蟑，遭猫/蛇追猎 */
+      this.sparrows = [];
+      /** 麻雀蛋（须在树上；每窝仅一颗会孵化） */
+      this.sparrowEggs = [];
+      this._nextSparrowEggLayAt = 0;
+      /** 猫当前追的落地麻雀 sprite */
+      this.catChaseSparrow = null;
     }
 
     nearestManholeTo(x, y) {
@@ -1588,7 +1624,8 @@ function initWorld() {
       let best = null;
       let bestD = Infinity;
       for (const site of sites) {
-        if (!site.npc?.active || site.busy || site.eggBatchResolving) continue;
+        if (!site.npc?.active || site.busy || site.dead || site.cooloff || site.incoming || site.eggBatchResolving)
+          continue;
         const d = Math.hypot(site.npc.x - ex, site.npc.y - ey);
         if (d < bestD) {
           bestD = d;
@@ -1784,6 +1821,221 @@ function initWorld() {
       }
       for (const e of this.lizardEggs) {
         if (e.stallPull) stepEgg(e, "lizard");
+      }
+    }
+
+    stallShrimpSiteForNpc(npc) {
+      return npc?._stallSite || null;
+    }
+
+    isStallShrimpSiteOperational(site) {
+      return (
+        site &&
+        !site.dead &&
+        !site.cooloff &&
+        !site.incoming &&
+        !site.eggBatchResolving &&
+        site.npc?.active
+      );
+    }
+
+    /** 牛蛙可追咬：站摊 idle、虾扯蛋、池里乘凉均可；不含死虾与替补进场的虾 */
+    canFrogTargetStallShrimp(site) {
+      return !!(site && !site.dead && !site.incoming && site.npc?.active);
+    }
+
+    pickPlazaEntryPoint(x, y) {
+      const b = this.plazaWalkBounds;
+      if (!b) return { x, y };
+      const ps = this.plazaScale || 1;
+      const pad = 32 * ps;
+      const cy = Phaser.Math.Clamp(y, b.minY, b.maxY);
+      const cx = Phaser.Math.Clamp(x, b.minX, b.maxX);
+      const dxL = x - b.minX;
+      const dxR = b.maxX - x;
+      const dyT = y - b.minY;
+      const dyB = b.maxY - y;
+      const min = Math.min(dxL, dxR, dyT, dyB);
+      if (min === dxL) return { x: b.minX - pad, y: cy };
+      if (min === dxR) return { x: b.maxX + pad, y: cy };
+      if (min === dyT) return { x: cx, y: b.minY - pad };
+      return { x: cx, y: b.maxY + pad };
+    }
+
+    countRoachesNear(x, y, radius) {
+      let n = 0;
+      for (const ro of this.roaches) {
+        if (!ro.sprite?.active) continue;
+        if (Math.hypot(ro.sprite.x - x, ro.sprite.y - y) <= radius) n++;
+      }
+      return n;
+    }
+
+    cancelStallShrimpPullsForSite(site, restoreShrimp) {
+      for (const e of [...this.pondFishEggs, ...this.lizardEggs]) {
+        if (e.stallPull?.site === site) this.cancelStallShrimpEggPull(e, restoreShrimp);
+      }
+    }
+
+    tryStallShrimpEatPoolFish(poolIndex) {
+      if (Math.random() >= STALL_SHRIMP_COOLOFF_EAT_FISH_CHANCE) return;
+      for (let i = this.pondFish.length - 1; i >= 0; i--) {
+        const f = this.pondFish[i];
+        if (f.poolIndex !== poolIndex || !f.sprite?.active) continue;
+        f.sprite.destroy();
+        this.pondFish.splice(i, 1);
+        break;
+      }
+    }
+
+    startStallShrimpCooloff(site, now) {
+      if (!this.isStallShrimpSiteOperational(site) || site.busy) return;
+      if (!this.plazaPools?.length) return;
+      const poolIndex = Math.floor(Math.random() * this.plazaPools.length);
+      const pool = this.plazaPools[poolIndex];
+      const pt = this.randomPointInsidePlazaPool(pool);
+      this.tweens.killTweensOf(site.npc);
+      site.busy = true;
+      site.cooloff = { phase: "to_pool", poolIndex, poolX: pt.x, poolY: pt.y, until: 0 };
+    }
+
+    updateStallShrimpCooloffs(now, dt) {
+      const ps = this.plazaScale || 1;
+      const spd = STALL_SHRIMP_COOLOFF_SPEED * ps;
+      const homeD = 14 * ps;
+
+      if (now >= this._nextStallShrimpCooloffAt && this.stallShrimpSites?.length) {
+        this._nextStallShrimpCooloffAt = now + STALL_SHRIMP_COOLOFF_INTERVAL_MS;
+        const eligible = this.stallShrimpSites.filter(
+          (s) => this.isStallShrimpSiteOperational(s) && !s.busy,
+        );
+        if (eligible.length) {
+          this.startStallShrimpCooloff(eligible[Math.floor(Math.random() * eligible.length)], now);
+        }
+      }
+
+      for (const site of this.stallShrimpSites || []) {
+        const cf = site.cooloff;
+        const npc = site.npc;
+        if (!cf || !npc?.active) continue;
+
+        if (cf.phase === "to_pool") {
+          const dx = cf.poolX - npc.x;
+          const dy = cf.poolY - npc.y;
+          const len = Math.hypot(dx, dy) || 1;
+          if (len < homeD) {
+            cf.phase = "in_pool";
+            cf.until = now + STALL_SHRIMP_COOLOFF_IN_POOL_MS;
+            this.tryStallShrimpEatPoolFish(cf.poolIndex);
+          } else {
+            const step = Math.min(spd * dt, len);
+            npc.setPosition(npc.x + (dx / len) * step, npc.y + (dy / len) * step);
+            if (Math.abs(dx) > 0.35) npc.setFlipX(dx < 0);
+          }
+          continue;
+        }
+
+        if (cf.phase === "in_pool") {
+          npc.setPosition(cf.poolX, cf.poolY);
+          if (now >= cf.until) {
+            cf.phase = "return";
+          }
+          continue;
+        }
+
+        if (cf.phase === "return") {
+          const dx = site.npcHomeX - npc.x;
+          const dy = site.npcHomeY - npc.y;
+          const len = Math.hypot(dx, dy) || 1;
+          if (len < homeD) {
+            site.cooloff = null;
+            site.busy = false;
+            npc.setPosition(site.npcHomeX, site.npcHomeY);
+            npc.setFlipX(false);
+            this.restoreShrimpBobAtSite(site);
+          } else {
+            const step = Math.min(spd * dt, len);
+            npc.setPosition(npc.x + (dx / len) * step, npc.y + (dy / len) * step);
+            if (Math.abs(dx) > 0.35) npc.setFlipX(dx < 0);
+          }
+        }
+      }
+    }
+
+    killStallShrimpAtSite(site, now) {
+      const npc = site?.npc;
+      if (!npc?.active || site.dead) return;
+      this.cancelStallShrimpPullsForSite(site, false);
+      this.tweens.killTweensOf(npc);
+      site.cooloff = null;
+      site.busy = true;
+      site.dead = true;
+      npc.setFlipY(true);
+      npc.setTint(0x6a5048);
+      npc.setDepth(8.2);
+    }
+
+    startStallShrimpReplacement(site, now) {
+      if (site.incoming) return;
+      const entry = this.pickPlazaEntryPoint(site.stallX, site.stallY);
+      const npc = this.add
+        .image(entry.x, entry.y, "shrimp")
+        .setOrigin(0.5)
+        .setDepth(8)
+        .setTint(site.stallTint ?? 0xffffff);
+      npc._stallSite = site;
+      this.boothNpcs.push(npc);
+      site.incoming = { npc, startedAt: now };
+    }
+
+    updateDeadStallShrimpSites(now) {
+      for (const site of this.stallShrimpSites || []) {
+        if (!site.dead || !site.npc?.active) continue;
+        const sx = site.npc.x;
+        const sy = site.npc.y;
+        if (this.countRoachesNear(sx, sy, DEAD_SHRIMP_ROACH_GATHER_DIST) < DEAD_SHRIMP_ROACH_GATHER_COUNT) continue;
+
+        try {
+          site.npc.destroy();
+        } catch {
+          /* noop */
+        }
+        site.npc = null;
+        site.dead = false;
+        site.busy = true;
+        this.startStallShrimpReplacement(site, now);
+      }
+    }
+
+    updateStallShrimpReplacements(now, dt) {
+      const ps = this.plazaScale || 1;
+      const spd = STALL_SHRIMP_REPLACEMENT_SPEED * ps;
+      const homeD = 12 * ps;
+
+      for (const site of this.stallShrimpSites || []) {
+        const inc = site.incoming;
+        if (!inc?.npc?.active) {
+          if (inc) site.incoming = null;
+          continue;
+        }
+        const npc = inc.npc;
+        const dx = site.npcHomeX - npc.x;
+        const dy = site.npcHomeY - npc.y;
+        const len = Math.hypot(dx, dy) || 1;
+        if (len < homeD) {
+          npc.setPosition(site.npcHomeX, site.npcHomeY);
+          site.npc = npc;
+          site.incoming = null;
+          site.busy = false;
+          npc.setFlipX(false);
+          npc.setFlipY(false);
+          this.restoreShrimpBobAtSite(site);
+        } else {
+          const step = Math.min(spd * dt, len);
+          npc.setPosition(npc.x + (dx / len) * step, npc.y + (dy / len) * step);
+          if (Math.abs(dx) > 0.35) npc.setFlipX(dx < 0);
+          this.clampSpriteToPlaza(npc, false);
+        }
       }
     }
 
@@ -2861,7 +3113,164 @@ function initWorld() {
         nextEatRoachAt: 0,
         nextEatEggAt: 0,
         nextEatLizardAt: 0,
+        nextEatSparrowEggAt: 0,
+        /** @type {{ egg: object, tree: object, phase: string } | null} */
+        treeEggClimb: null,
+        chasingSparrow: null,
       };
+    }
+
+    clampSpriteFlying(sprite) {
+      const b = this.plazaWalkBounds;
+      if (!b || !sprite?.active) return;
+      sprite.x = Math.max(b.minX, Math.min(b.maxX, sprite.x));
+      sprite.y = Math.max(b.minY, Math.min(b.maxY, sprite.y));
+    }
+
+    sparrowTreePerchY(tree) {
+      return tree.y - (14 + 16 * tree.scale);
+    }
+
+    pickSparrowFlyTarget(sp) {
+      const p = this.plazaWalkBounds;
+      if (p) {
+        sp.target.x = p.minX + Math.random() * (p.maxX - p.minX);
+        sp.target.y = p.minY + Math.random() * (p.maxY - p.minY);
+        return;
+      }
+      sp.target.x = sp.home.x + (Math.random() - 0.5) * 200;
+      sp.target.y = sp.home.y + (Math.random() - 0.5) * 160;
+    }
+
+    createSparrowAt(x, y, startFlying = true) {
+      const sprite = this.add
+        .image(x, y, startFlying ? "sparrowFly" : "sparrow")
+        .setOrigin(0.5, 0.55)
+        .setDepth(17.2)
+        .setScale(0.72);
+      const sp = {
+        sprite,
+        home: { x, y },
+        target: { x, y },
+        retargetAt: 0,
+        mode: startFlying ? "fly" : "land",
+        landUntil: 0,
+        fleeUntil: 0,
+        beingChased: false,
+        chasedBySnake: null,
+      };
+      this.pickSparrowFlyTarget(sp);
+      sp.retargetAt = this.time.now + 600 + Math.random() * 900;
+      return sp;
+    }
+
+    spawnHatchSparrowNear(x, y) {
+      if (this.sparrows.length >= MAX_SPARROWS) return;
+      const c = this.clampPosToPlaza(x + (Math.random() - 0.5) * 16, y + (Math.random() - 0.5) * 16);
+      this.sparrows.push(this.createSparrowAt(c.x, c.y, true));
+    }
+
+    createSparrowEggAt(tree, perchX, perchY, now, willHatch) {
+      const sprite = this.add
+        .image(perchX, perchY, "sparrowEgg")
+        .setOrigin(0.5, 0.55)
+        .setDepth(19.5)
+        .setScale(0.62);
+      return {
+        sprite,
+        tree,
+        perchX,
+        perchY,
+        hatchAt: now + SPARROW_EGG_HATCH_MS,
+        willHatch: !!willHatch,
+      };
+    }
+
+    nearestGroundSparrowEntry(x, y, maxDist) {
+      let best = null;
+      let bestD = maxDist;
+      for (const sp of this.sparrows) {
+        if (sp.mode !== "land" || sp.fleeUntil > this.time.now) continue;
+        const d = Math.hypot(sp.sprite.x - x, sp.sprite.y - y);
+        if (d < bestD) {
+          bestD = d;
+          best = sp;
+        }
+      }
+      return best;
+    }
+
+    /** 落地麻雀被追：80% 被捕，20% 飞走并令追猎者放弃 */
+    resolveSparrowPredatorCatch(sp, now) {
+      if (Math.random() < SPARROW_CATCH_CHANCE) {
+        sp.sprite.destroy();
+        const idx = this.sparrows.indexOf(sp);
+        if (idx >= 0) this.sparrows.splice(idx, 1);
+        if (this.catChaseSparrow === sp.sprite) this.catChaseSparrow = null;
+        if (sp.chasedBySnake) sp.chasedBySnake.chasingSparrow = null;
+        return true;
+      }
+      sp.mode = "fly";
+      sp.fleeUntil = now + SPARROW_ESCAPE_FLY_MS;
+      sp.beingChased = false;
+      sp.landUntil = 0;
+      sp.sprite.setTexture("sparrowFly");
+      sp.sprite.setDepth(17.2);
+      const sx = sp.sprite.x;
+      const sy = sp.sprite.y;
+      sp.target.x = sx + (Math.random() - 0.5) * 120;
+      sp.target.y = sy - 40 - Math.random() * 50;
+      sp.retargetAt = now + SPARROW_ESCAPE_FLY_MS;
+      if (this.catChaseSparrow === sp.sprite) this.catChaseSparrow = null;
+      if (sp.chasedBySnake) {
+        sp.chasedBySnake.chasingSparrow = null;
+        sp.chasedBySnake = null;
+      }
+      return false;
+    }
+
+    updateSnakeSparrowEggClimb(snk, now, dt) {
+      const climb = snk.treeEggClimb;
+      if (!climb) return false;
+      const sp = snk.sprite;
+      const egg = climb.egg;
+      if (!egg?.sprite?.active) {
+        snk.treeEggClimb = null;
+        sp.setDepth(15);
+        return false;
+      }
+      if (climb.phase === "approach") {
+        const tx = climb.tree.x;
+        const ty = climb.tree.y + 6;
+        let dx = tx - sp.x;
+        let dy = ty - sp.y;
+        const len = Math.hypot(dx, dy) || 1;
+        sp.x += (dx / len) * 20 * dt;
+        sp.y += (dy / len) * 20 * dt;
+        sp.setRotation(Math.atan2(dy, dx) + Math.sin(snk.wrigglePhase * 1.28) * 0.14);
+        if (len < 10) climb.phase = "climb";
+      } else {
+        sp.setDepth(20.5);
+        let dx = egg.perchX - sp.x;
+        let dy = egg.perchY - sp.y;
+        const len = Math.hypot(dx, dy) || 1;
+        sp.x += (dx / len) * 16 * dt;
+        sp.y += (dy / len) * 16 * dt;
+        sp.setRotation(Math.atan2(dy, dx) * 0.5);
+        if (len < SPARROW_EGG_EAT_DIST) {
+          egg.sprite.destroy();
+          const ei = this.sparrowEggs.indexOf(egg);
+          if (ei >= 0) this.sparrowEggs.splice(ei, 1);
+          snk.nextEatSparrowEggAt = now + SNAKE_EAT_SPARROW_EGG_COOLDOWN_MS;
+          snk.treeEggClimb = null;
+          sp.setDepth(15);
+          const down = this.clampPosToPlaza(climb.tree.x + (Math.random() - 0.5) * 8, climb.tree.y + 4, sp);
+          sp.setPosition(down.x, down.y);
+          this.pickSnakeTarget(snk);
+          snk.retargetAt = now + 800;
+        }
+      }
+      return true;
     }
 
     aimCatAt(cat, tx, ty) {
@@ -2904,12 +3313,34 @@ function initWorld() {
       return chaseMouseSprite;
     }
 
+    /** 猫追落地麻雀（优先级低于老鼠） */
+    resolveCatSparrowChase(cat, chaseMouseSprite) {
+      if (chaseMouseSprite) {
+        this.catChaseSparrow = null;
+        return null;
+      }
+      let chaseEntry = null;
+      if (this.catChaseSparrow) {
+        chaseEntry = this.sparrows.find((sp) => sp.sprite === this.catChaseSparrow && sp.mode === "land");
+        if (!chaseEntry) this.catChaseSparrow = null;
+      }
+      if (!chaseEntry) {
+        chaseEntry = this.nearestGroundSparrowEntry(cat.x, cat.y, SPARROW_PREDATOR_AGRO);
+        if (chaseEntry) this.catChaseSparrow = chaseEntry.sprite;
+      }
+      if (chaseEntry) chaseEntry.beingChased = true;
+      return chaseEntry;
+    }
+
     update(_t, delta) {
       const now = this.time.now;
       const dt = Math.min((delta || 16) / 1000, 0.045);
       this.updatePlazaPoolFlow(now);
       this.updateFountainWater(now);
       this.updateStallShrimpEggPulls(now, dt);
+      this.updateStallShrimpCooloffs(now, dt);
+      this.updateDeadStallShrimpSites(now);
+      this.updateStallShrimpReplacements(now, dt);
       this.updatePondFish(now, dt);
       const cat = this.cat;
       if (!cat) return;
@@ -2971,6 +3402,35 @@ function initWorld() {
             this.lizardEggs.push(this.createLizardEggAt(ec.x, ec.y, now));
             this.tryAssignStallShrimpPull(this.lizardEggs[this.lizardEggs.length - 1], "lizard");
           }
+        }
+      }
+
+      for (let sei = this.sparrowEggs.length - 1; sei >= 0; sei--) {
+        const egg = this.sparrowEggs[sei];
+        if (now < egg.hatchAt) continue;
+        if (egg.willHatch && this.sparrows.length < MAX_SPARROWS) {
+          this.spawnHatchSparrowNear(egg.perchX, egg.perchY + 18);
+        }
+        egg.sprite.destroy();
+        this.sparrowEggs.splice(sei, 1);
+      }
+
+      if (
+        this.sparrows.length < SPARROW_LAY_THRESHOLD &&
+        this.treeSpots.length &&
+        !this.sparrowEggs.length &&
+        now >= this._nextSparrowEggLayAt
+      ) {
+        this._nextSparrowEggLayAt = now + 7000 + Math.random() * 5000;
+        const tree = this.treeSpots[Math.floor(Math.random() * this.treeSpots.length)];
+        const perchY = this.sparrowTreePerchY(tree);
+        const hatchIdx = Math.floor(Math.random() * SPARROW_EGGS_PER_LAY);
+        for (let si = 0; si < SPARROW_EGGS_PER_LAY; si++) {
+          const ox = (si - (SPARROW_EGGS_PER_LAY - 1) / 2) * 7;
+          const py = perchY - 2 + (si % 2) * 2;
+          this.sparrowEggs.push(
+            this.createSparrowEggAt(tree, tree.x + ox, py, now, si === hatchIdx),
+          );
         }
       }
 
@@ -3161,6 +3621,27 @@ function initWorld() {
         let rtx;
         let rty;
         let rlen;
+        let deadShrimpSeek = false;
+        if (!roachMh) {
+          let bestDeadD = DEAD_SHRIMP_ROACH_ATTRACT;
+          let bestDeadX = null;
+          let bestDeadY = null;
+          for (const site of this.stallShrimpSites || []) {
+            if (!site.dead || !site.npc?.active) continue;
+            const d = Math.hypot(site.npc.x - rx, site.npc.y - ry);
+            if (d < bestDeadD) {
+              bestDeadD = d;
+              bestDeadX = site.npc.x;
+              bestDeadY = site.npc.y;
+            }
+          }
+          if (bestDeadX != null) {
+            deadShrimpSeek = true;
+            rtx = bestDeadX - rx;
+            rty = bestDeadY - ry;
+            rlen = Math.hypot(rtx, rty) || 1;
+          }
+        }
         if (roachMh) {
           rtx = roachMh.x - rx;
           rty = roachMh.y - ry;
@@ -3170,7 +3651,7 @@ function initWorld() {
             rty = 0;
             rlen = 1;
           }
-        } else {
+        } else if (!deadShrimpSeek) {
           rtx = ro.target.x - rx;
           rty = ro.target.y - ry;
           rlen = Math.hypot(rtx, rty) || 1;
@@ -3181,7 +3662,7 @@ function initWorld() {
             rlen = Math.hypot(rtx, rty) || 1;
           }
         }
-        const vRoachEff = roachPanic ? V_ROACH * 1.35 : V_ROACH;
+        const vRoachEff = roachPanic ? V_ROACH * 1.35 : deadShrimpSeek ? V_ROACH * 1.55 : V_ROACH;
         rx += (rtx / rlen) * vRoachEff * dt;
         ry += (rty / rlen) * vRoachEff * dt;
 
@@ -3280,15 +3761,39 @@ function initWorld() {
       const SNAKE_EAT_ROACH_COOLDOWN_MS = 850;
 
       for (const snk of this.snakes) {
+        if (this.updateSnakeSparrowEggClimb(snk, now, dt)) continue;
+
         const sp = snk.sprite;
         let sx = sp.x;
         let sy = sp.y;
 
+        if (
+          now >= (snk.nextEatSparrowEggAt || 0) &&
+          !snk.treeEggClimb &&
+          this.sparrowEggs.length
+        ) {
+          let bestEgg = null;
+          let bestEggD = SNAKE_HUNT_RANGE * 1.45;
+          for (const egg of this.sparrowEggs) {
+            const d = Math.hypot(egg.tree.x - sx, egg.tree.y - sy);
+            if (d < bestEggD) {
+              bestEggD = d;
+              bestEgg = egg;
+            }
+          }
+          if (bestEgg) {
+            snk.treeEggClimb = { egg: bestEgg, tree: bestEgg.tree, phase: "approach" };
+            if (this.updateSnakeSparrowEggClimb(snk, now, dt)) continue;
+          }
+        }
+
         let preyX = null;
         let preyY = null;
         let bestPd = SNAKE_HUNT_RANGE;
+        let huntSparrow = null;
         const canHuntMouse = now >= (snk.nextEatMouseAt || 0);
         const canHuntEgg = now >= (snk.nextEatEggAt || 0);
+        snk.chasingSparrow = null;
         if (canHuntMouse) {
           for (const m of this.mice) {
             const d = Math.hypot(m.sprite.x - sx, m.sprite.y - sy);
@@ -3327,12 +3832,27 @@ function initWorld() {
             }
           }
         }
+        for (const sv of this.sparrows) {
+          if (sv.mode !== "land" || sv.fleeUntil > now) continue;
+          const d = Math.hypot(sv.sprite.x - sx, sv.sprite.y - sy);
+          if (d < bestPd) {
+            bestPd = d;
+            preyX = sv.sprite.x;
+            preyY = sv.sprite.y;
+            huntSparrow = sv;
+          }
+        }
 
         let tx;
         let ty;
         if (preyX != null) {
           tx = preyX;
           ty = preyY;
+          if (huntSparrow) {
+            snk.chasingSparrow = huntSparrow;
+            huntSparrow.chasedBySnake = snk;
+            huntSparrow.beingChased = true;
+          }
         } else {
           if (now > snk.retargetAt) {
             snk.retargetAt = now + 2200 + Math.random() * 1800;
@@ -3413,6 +3933,14 @@ function initWorld() {
               break;
             }
           }
+        }
+        if (snk.chasingSparrow?.sprite?.active && snk.chasingSparrow.mode === "land") {
+          const sv = snk.chasingSparrow;
+          if (Math.hypot(sv.sprite.x - sp.x, sv.sprite.y - sp.y) < SNAKE_EAT_DIST) {
+            this.resolveSparrowPredatorCatch(sv, now);
+          }
+        } else {
+          snk.chasingSparrow = null;
         }
       }
 
@@ -3613,6 +4141,16 @@ function initWorld() {
             preyY = lsp.y;
           }
         }
+        for (const site of this.stallShrimpSites || []) {
+          if (!this.canFrogTargetStallShrimp(site)) continue;
+          const sp = site.npc;
+          const d = Math.hypot(sp.x - fx, sp.y - fy);
+          if (d < bestFd) {
+            bestFd = d;
+            preyX = sp.x;
+            preyY = sp.y;
+          }
+        }
         let ftx;
         let fty;
         if (preyX != null) {
@@ -3682,12 +4220,135 @@ function initWorld() {
               }
             }
           }
+          if (!ate) {
+            for (const site of this.stallShrimpSites || []) {
+              if (!this.canFrogTargetStallShrimp(site)) continue;
+              const sp = site.npc;
+              if (Math.hypot(sp.x - fp.x, sp.y - fp.y) < FROG_EAT_DIST) {
+                if (Math.random() < FROG_KILL_STALL_SHRIMP_CHANCE) {
+                  this.killStallShrimpAtSite(site, now);
+                }
+                ate = true;
+                break;
+              }
+            }
+          }
           if (ate) fr.nextEatAt = now + FROG_EAT_COOLDOWN_MS;
+        }
+      }
+
+      for (const sv of this.sparrows) {
+        const spr = sv.sprite;
+        let sx = spr.x;
+        let sy = spr.y;
+        const fleeing = sv.fleeUntil > now;
+        const flying = sv.mode === "fly" || fleeing;
+
+        if (flying) {
+          spr.setTexture("sparrowFly");
+          spr.setDepth(17.2);
+          if (now > sv.retargetAt) {
+            sv.retargetAt = now + 700 + Math.random() * 900;
+            if (!fleeing && this.roaches.length && Math.random() < 0.28) {
+              let bestRo = null;
+              let bestRd = SPARROW_ROACH_HUNT_RANGE;
+              for (const ro of this.roaches) {
+                const d = Math.hypot(ro.sprite.x - sx, ro.sprite.y - sy);
+                if (d < bestRd) {
+                  bestRd = d;
+                  bestRo = ro;
+                }
+              }
+              if (bestRo) {
+                sv.mode = "land";
+                sv.landUntil = now + SPARROW_LAND_MIN_MS + Math.random() * 1800;
+                sv.target.x = bestRo.sprite.x;
+                sv.target.y = bestRo.sprite.y;
+              } else {
+                this.pickSparrowFlyTarget(sv);
+              }
+            } else {
+              this.pickSparrowFlyTarget(sv);
+            }
+          }
+        } else {
+          spr.setTexture("sparrow");
+          spr.setDepth(16.8);
+          sv.beingChased =
+            Math.hypot(cx0 - sx, cy0 - sy) < SPARROW_PREDATOR_AGRO ||
+            this.snakes.some(
+              (snk) =>
+                snk.chasingSparrow === sv ||
+                Math.hypot(snk.sprite.x - sx, snk.sprite.y - sy) < SPARROW_PREDATOR_AGRO,
+            );
+          if (now > sv.landUntil && !sv.beingChased) {
+            sv.mode = "fly";
+            sv.retargetAt = now;
+            this.pickSparrowFlyTarget(sv);
+          }
+        }
+
+        let tx = sv.target.x - sx;
+        let ty = sv.target.y - sy;
+        let len = Math.hypot(tx, ty) || 1;
+        if (len < 4 && flying) {
+          this.pickSparrowFlyTarget(sv);
+          tx = sv.target.x - sx;
+          ty = sv.target.y - sy;
+          len = Math.hypot(tx, ty) || 1;
+        }
+
+        const speed = flying ? SPARROW_FLY_SPEED : SPARROW_LAND_SPEED;
+        sx += (tx / len) * speed * dt;
+        sy += (ty / len) * speed * dt;
+
+        if (!flying) {
+          let chaseRo = null;
+          let bestRd = SPARROW_ROACH_HUNT_RANGE;
+          for (const ro of this.roaches) {
+            const d = Math.hypot(ro.sprite.x - sx, ro.sprite.y - sy);
+            if (d < bestRd) {
+              bestRd = d;
+              chaseRo = ro;
+            }
+          }
+          if (chaseRo) {
+            tx = chaseRo.sprite.x - sx;
+            ty = chaseRo.sprite.y - sy;
+            len = Math.hypot(tx, ty) || 1;
+            sx += (tx / len) * (SPARROW_LAND_SPEED + 6) * dt;
+            sy += (ty / len) * (SPARROW_LAND_SPEED + 6) * dt;
+            for (let ri = this.roaches.length - 1; ri >= 0; ri--) {
+              const ro = this.roaches[ri];
+              if (Math.hypot(ro.sprite.x - sx, ro.sprite.y - sy) < SPARROW_ROACH_EAT_DIST) {
+                ro.sprite.destroy();
+                this.roaches.splice(ri, 1);
+                sv.landUntil = now + 400;
+                break;
+              }
+            }
+          }
+        }
+
+        spr.setPosition(sx, sy);
+        spr.setFlipX((sv.target.x - sx) < 0);
+        if (flying) {
+          this.clampSpriteFlying(spr);
+        } else {
+          this.clampSpriteToPlaza(spr);
+          if (this.bounceIfNearFountain(spr, now)) {
+            sv.home.x = spr.x;
+            sv.home.y = spr.y;
+            sv.target.x = spr.x + (Math.random() - 0.5) * 40;
+            sv.target.y = spr.y + (Math.random() - 0.5) * 40;
+          }
+          this.clampSpriteToPlaza(spr);
         }
       }
 
       if (!skipCatGround) {
         const chaseLiz = this.nearestLizardEntry(cat);
+        const chaseSparrowEntry = this.resolveCatSparrowChase(cat, chaseMouseSpriteEarly);
 
         let chaseMx = null;
         let chaseMy = null;
@@ -3697,6 +4358,8 @@ function initWorld() {
           chaseMx = chaseMouseSprite.x;
           chaseMy = chaseMouseSprite.y;
           vCat = 34;
+        } else if (chaseSparrowEntry) {
+          vCat = 32;
         }
 
         let tcx = cat.x;
@@ -3704,6 +4367,9 @@ function initWorld() {
         if (chaseMouseSprite) {
           tcx = chaseMx;
           tcy = chaseMy;
+        } else if (chaseSparrowEntry) {
+          tcx = chaseSparrowEntry.sprite.x;
+          tcy = chaseSparrowEntry.sprite.y;
         } else if (chaseLiz) {
           tcx = chaseLiz.sprite.x;
           tcy = chaseLiz.sprite.y;
@@ -3735,6 +4401,13 @@ function initWorld() {
             }
             this.catChaseMouse = null;
           }
+        } else if (chaseSparrowEntry?.sprite?.active && chaseSparrowEntry.mode === "land") {
+          if (
+            Math.hypot(chaseSparrowEntry.sprite.x - cat.x, chaseSparrowEntry.sprite.y - cat.y) <
+            SPARROW_CATCH_DIST
+          ) {
+            this.resolveSparrowPredatorCatch(chaseSparrowEntry, now);
+          }
         } else if (chaseLiz) {
           const lsp = chaseLiz.sprite;
           if (Math.hypot(lsp.x - cat.x, lsp.y - cat.y) < MOUSE_CATCH) {
@@ -3748,10 +4421,15 @@ function initWorld() {
 
 
       for (const npc of this.boothNpcs) {
-        if (npc && npc.active) {
-          this.bounceIfNearFountain(npc, now);
-          this.clampSpriteToPlaza(npc);
+        if (!npc?.active) continue;
+        const site = this.stallShrimpSiteForNpc(npc);
+        if (site?.dead || site?.incoming?.npc === npc) continue;
+        if (site?.cooloff || site?.incoming) {
+          this.clampSpriteToPlaza(npc, site?.cooloff?.phase === "in_pool");
+          continue;
         }
+        this.bounceIfNearFountain(npc, now);
+        this.clampSpriteToPlaza(npc);
       }
     }
 
@@ -4078,6 +4756,31 @@ function initWorld() {
         g.fillRect(18, 5.8, 1, 1);
         // 鼻线
         g.fillStyle(0x1a2820, 0.6).fillRect(13.5, 5, 1, 2);
+      });
+      // 麻雀：落地收翅 / 飞行展翼
+      makeTexture(this, "sparrow", 14, 12, (g) => {
+        g.fillStyle(0x6a5848, 1).fillEllipse(7, 7, 8, 5);
+        g.fillStyle(0x8b7355, 1).fillEllipse(7, 6, 6, 4);
+        g.fillStyle(0x231c18, 1).fillRect(10, 5, 1, 1);
+        g.fillStyle(0xf4a900, 0.95).fillRect(11, 6, 2, 1);
+        g.fillStyle(0x5a4a3a, 1).fillRect(2, 7, 3, 2);
+        g.fillRect(9, 7, 3, 2);
+      });
+      makeTexture(this, "sparrowFly", 20, 14, (g) => {
+        g.fillStyle(0x6a5848, 1).fillEllipse(10, 7, 7, 4);
+        g.fillStyle(0x8b7355, 1).fillEllipse(10, 6.5, 5, 3);
+        g.fillStyle(0x231c18, 1).fillRect(12, 5.5, 1, 1);
+        g.fillStyle(0xf4a900, 0.95).fillRect(13, 6.5, 2, 1);
+        g.fillStyle(0xa09078, 0.95).fillTriangle(1, 7, 6, 2, 6, 11);
+        g.fillTriangle(19, 7, 14, 2, 14, 11);
+        g.fillStyle(0x7a6a58, 0.85).fillTriangle(3, 7, 7, 4, 7, 10);
+        g.fillTriangle(17, 7, 13, 4, 13, 10);
+      });
+      makeTexture(this, "sparrowEgg", 8, 10, (g) => {
+        g.fillStyle(0xe8e4dc, 1).fillEllipse(4, 5.5, 3.5, 4.5);
+        g.fillStyle(0xc8c0b0, 1).fillEllipse(4, 5.5, 2.5, 3.5);
+        g.fillStyle(0x6a8090, 0.55).fillRect(3, 4.5, 1, 1);
+        g.fillRect(5, 6.5, 1, 1);
       });
 
       const ground = this.add.graphics().setDepth(0);
@@ -4435,6 +5138,26 @@ function initWorld() {
         this.frogs.push(fr);
       }
 
+      this.sparrows = [];
+      const sparrowSpawns = [
+        [-200 * PS, -60 * PS],
+        [-140 * PS, 40 * PS],
+        [-30 * PS, -140 * PS],
+        [40 * PS, -80 * PS],
+        [120 * PS, 20 * PS],
+        [200 * PS, -30 * PS],
+        [-180 * PS, 120 * PS],
+        [80 * PS, 140 * PS],
+        [240 * PS, 90 * PS],
+        [-60 * PS, 180 * PS],
+      ];
+      for (let spi = 0; spi < sparrowSpawns.length && this.sparrows.length < MAX_SPARROWS; spi++) {
+        const [sx, sy] = sparrowSpawns[spi];
+        const sc = this.clampPosToPlaza(sx, sy);
+        this.sparrows.push(this.createSparrowAt(sc.x, sc.y, true));
+      }
+      this._nextSparrowEggLayAt = this.time.now + 12000;
+
       // Zone titles sit above plaza tiles / trees (6) but below booths (7+) so stalls are never covered.
       const depthZoneTitle = 6.4;
       const mkLabel = (x, y, text, subHue) =>
@@ -4560,9 +5283,9 @@ function initWorld() {
           npc = this.add.image(x - 16 * PS, npcY, "goStones").setOrigin(0.5).setDepth(8);
         } else {
           npc = this.add.image(x - 18 * PS, npcY, "shrimp").setOrigin(0.5).setDepth(8);
-          if (z === "avatar") npc.setTint(0xffb8c6);
-          else if (z === "forum") npc.setTint(0xffe8a0);
-          else if (z === "vote") npc.setTint(0xa8c8e8);
+          const shrimpTint =
+            z === "avatar" ? 0xffb8c6 : z === "forum" ? 0xffe8a0 : z === "vote" ? 0xa8c8e8 : 0xffffff;
+          npc.setTint(shrimpTint);
         }
         this.tweens.add({
           targets: npc,
@@ -4575,7 +5298,7 @@ function initWorld() {
         // 竞技场摊位的五子棋棋子图为装饰，不参与广场小动物碰撞逻辑
         if (z !== "match") {
           this.boothNpcs.push(npc);
-          this.stallShrimpSites.push({
+          const siteObj = {
             npc,
             stallX: x,
             stallY: y,
@@ -4585,7 +5308,14 @@ function initWorld() {
             eggBasket: [],
             eggBasketIcons: [],
             eggBatchResolving: false,
-          });
+            dead: false,
+            cooloff: null,
+            incoming: null,
+            stallTint:
+              z === "avatar" ? 0xffb8c6 : z === "forum" ? 0xffe8a0 : z === "vote" ? 0xa8c8e8 : 0xffffff,
+          };
+          npc._stallSite = siteObj;
+          this.stallShrimpSites.push(siteObj);
         }
 
         const bubble = this.add
@@ -4615,7 +5345,8 @@ function initWorld() {
         this.booths.push(stall);
 
         const sub = poll.plazaPromoted ? "★" : "票";
-        const npc = this.add.image(x - 16 * PS, y + 10 * PS, "shrimp").setOrigin(0.5).setDepth(8).setTint(0x9ec5e8);
+        const shrimpTint = 0x9ec5e8;
+        const npc = this.add.image(x - 16 * PS, y + 10 * PS, "shrimp").setOrigin(0.5).setDepth(8).setTint(shrimpTint);
         this.tweens.add({
           targets: npc,
           y: y + 10 * PS - 2,
@@ -4625,7 +5356,7 @@ function initWorld() {
           ease: "Sine.inOut",
         });
         this.boothNpcs.push(npc);
-        this.stallShrimpSites.push({
+        const siteObj = {
           npc,
           stallX: x,
           stallY: y,
@@ -4635,7 +5366,13 @@ function initWorld() {
           eggBasket: [],
           eggBasketIcons: [],
           eggBatchResolving: false,
-        });
+          dead: false,
+          cooloff: null,
+          incoming: null,
+          stallTint: shrimpTint,
+        };
+        npc._stallSite = siteObj;
+        this.stallShrimpSites.push(siteObj);
         this.booths.push(npc);
 
         const bubble = this.add
