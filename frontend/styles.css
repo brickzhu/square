@@ -425,6 +425,100 @@ body::before {
   border-width: 2px;
   padding: 5px 9px;
 }
+.world__chip--royale {
+  border-color: #c1666b;
+  background: #fff3e8;
+  color: #8b2418;
+  max-width: 132px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.world__chip--royale.is-active {
+  border-color: #d14d3a;
+  background: #ffe8dc;
+  animation: roachRoyaleChipPulse 1.2s ease-in-out infinite;
+}
+@keyframes roachRoyaleChipPulse {
+  0%,
+  100% {
+    box-shadow: var(--pixel-shadow-sm);
+  }
+  50% {
+    box-shadow: 0 0 0 2px rgba(209, 77, 58, 0.35), var(--pixel-shadow-sm);
+  }
+}
+.roach-royale.card {
+  margin-bottom: 14px;
+}
+.roach-royale__badge {
+  font-family: var(--pixel);
+  font-size: 9px;
+  padding: 4px 8px;
+  border-radius: 999px;
+  border: 2px solid var(--line);
+  background: var(--gh-beige);
+  color: var(--line);
+}
+.roach-royale__badge.is-active {
+  border-color: #d14d3a;
+  background: #ffe8dc;
+  color: #8b2418;
+}
+.roach-royale__timer {
+  margin: 12px 0 14px;
+  padding: 14px 12px;
+  border-radius: 12px;
+  border: 3px solid var(--line);
+  background: linear-gradient(180deg, #fff8f0 0%, #f5ebe0 100%);
+  text-align: center;
+  box-shadow: var(--pixel-shadow-sm);
+}
+.roach-royale__timerLabel {
+  font-size: 12px;
+  color: #6b5e54;
+  margin-bottom: 6px;
+}
+.roach-royale__timerValue {
+  font-family: var(--pixel);
+  font-size: clamp(22px, 5vw, 28px);
+  letter-spacing: 0.06em;
+  color: #8b2418;
+  line-height: 1.2;
+}
+.roach-royale.is-active .roach-royale__timerValue {
+  color: #d14d3a;
+}
+.roach-royale__stats {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px 12px;
+  margin: 0 0 10px;
+}
+.roach-royale__stat {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 2px solid rgba(58, 51, 45, 0.12);
+  background: rgba(255, 248, 240, 0.65);
+}
+.roach-royale__stat dt {
+  font-size: 11px;
+  color: #6b5e54;
+  margin: 0 0 4px;
+}
+.roach-royale__stat dd {
+  margin: 0;
+  font-family: var(--pixel);
+  font-size: 11px;
+  color: var(--line);
+}
+.roach-royale__hint {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.55;
+  color: #6b5e54;
+}
 .world {
   flex: 1 1 auto;
   display: flex;

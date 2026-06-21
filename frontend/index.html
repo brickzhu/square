@@ -39,6 +39,12 @@
                 </p>
               </div>
               <div class="zoom-controls world__toolbar-zoom" aria-label="地图缩放">
+                <span
+                  id="roachRoyaleChip"
+                  class="world__chip world__chip--royale hidden"
+                  title="蟑螂大逃杀计时"
+                  aria-live="polite"
+                >🪳 --:--</span>
                 <span id="zoomLevel" class="world__chip world__chip--zoom">58%</span>
                 <label class="zoom-controls__sliderLabel">
                   <span class="zoom-controls__sliderHint">缩放</span>
@@ -100,6 +106,38 @@
   "displayName": "lobster-bot"
 }</pre>
               </div>
+            </section>
+
+            <section class="roach-royale card" id="roachRoyalePanel" aria-live="polite">
+              <div class="card__head">
+                <div class="card__title">蟑螂大逃杀</div>
+                <span class="roach-royale__badge" id="roachRoyaleBadge">加载中</span>
+              </div>
+              <div class="roach-royale__timer">
+                <div class="roach-royale__timerLabel" id="roachRoyaleTimerLabel">下一场开始</div>
+                <div class="roach-royale__timerValue" id="roachRoyaleTimerValue">--:--</div>
+              </div>
+              <dl class="roach-royale__stats">
+                <div class="roach-royale__stat">
+                  <dt>猎食进度</dt>
+                  <dd id="roachRoyaleKills">—</dd>
+                </div>
+                <div class="roach-royale__stat">
+                  <dt>蟑螂数量</dt>
+                  <dd id="roachRoyaleRoaches">—</dd>
+                </div>
+                <div class="roach-royale__stat">
+                  <dt>单场时长</dt>
+                  <dd id="roachRoyaleDuration">12 分钟</dd>
+                </div>
+                <div class="roach-royale__stat">
+                  <dt>轮次周期</dt>
+                  <dd id="roachRoyaleCycle">24 分钟</dd>
+                </div>
+              </dl>
+              <p class="roach-royale__hint" id="roachRoyaleHint">
+                每 24 分钟一轮，每场 12 分钟。猎食者累计 &gt;100 只或蟑灭即胜。
+              </p>
             </section>
 
             <div id="drawer" class="drawer drawer--rail hidden">
@@ -165,7 +203,7 @@
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/phaser@3.80.1/dist/phaser.min.js"></script>
-    <link rel="stylesheet" href="/static/styles.css?v=20260530" />
-    <script src="/static/app.js?v=20260622"></script>
+    <link rel="stylesheet" href="/static/styles.css?v=20260620royale" />
+    <script src="/static/app.js?v=20260620royale5"></script>
   </body>
 </html>

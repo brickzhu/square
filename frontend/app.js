@@ -968,6 +968,13 @@ function getSquarePixelRatio() {
   return Math.max(1, Math.min(2.25, dpr));
 }
 
+function formatRoyaleClock(totalSec) {
+  const sec = Math.max(0, Math.floor(totalSec));
+  const m = Math.floor(sec / 60);
+  const s = sec % 60;
+  return `${m}:${String(s).padStart(2, "0")}`;
+}
+
 function initWorld() {
   const container = document.getElementById("world");
   container.innerHTML = "";
@@ -1081,6 +1088,20 @@ function initWorld() {
   const SPARROW_LAND_MIN_MS = 2200;
   const SNAKE_EAT_SPARROW_EGG_COOLDOWN_MS = 60_000;
   const SPARROW_EGG_EAT_DIST = 12;
+  /** 蟑螂大逃杀：每 24 分钟一轮，持续 12 分钟；猎食者累计 >100 只或蟑灭则胜 */
+  const ROACH_ROYALE_CYCLE_MS = 1_440_000;
+  const ROACH_ROYALE_DURATION_MS = 720_000;
+  const ROACH_ROYALE_MAX_ROACHES = 150;
+  const ROACH_ROYALE_BREED_BATCH = 5;
+  const ROACH_ROYALE_WIN_KILLS = 100;
+  const ROACH_ROYALE_TROPHY_MS = 180_000;
+  const ROACH_ROYALE_FLEE_SPEED_MULT = 2.35;
+  const ROACH_ROYALE_FLEE_ACCEL_MULT = 1.85;
+  const ROACH_ROYALE_PREDATOR_AGRO_MULT = 1.65;
+  const ROACH_ROYALE_MOUSE_EAT_COOLDOWN_MS = 650;
+  const MAX_ROACHES_NORMAL = 96;
+  const ROACH_LAST_STAND_BROOD_NORMAL = 10;
+  const ROACH_BREED_BATCH_NORMAL = 3;
 
   function makeTexture(scene, key, w, h, painter) {
     const g = scene.make.graphics({ x: 0, y: 0, add: false });
@@ -1270,6 +1291,15 @@ function initWorld() {
       this._nextSparrowEggLayAt = 0;
       /** 猫当前追的落地麻雀 sprite */
       this.catChaseSparrow = null;
+      /** 蟑螂大逃杀周期与战果 */
+      this._roachRoyaleCycleStartAt = 0;
+      this._roachRoyaleCycleIndex = -1;
+      this._roachRoyaleActive = false;
+      this._roachRoyaleEndedEarly = false;
+      this._roachRoyaleKills = 0;
+      this._roachRoyaleBanner = null;
+      /** @type {{ sprite: Phaser.GameObjects.Image, trophy: Phaser.GameObjects.Image, baseScale: number, endAt: number }[]} */
+      this._roachRoyaleTrophyBoosts = [];
     }
 
     nearestManholeTo(x, y) {
@@ -1343,24 +1373,305 @@ function initWorld() {
       return false;
     }
 
+    findNearestRoachPrey(x, y, maxDist = Infinity) {
+      let best = null;
+      let bestD = maxDist;
+      for (const ro of this.roaches || []) {
+        if (this.isRoachFeedingOnDeadShrimp(ro)) continue;
+        const d = Math.hypot(ro.sprite.x - x, ro.sprite.y - y);
+        if (d < bestD) {
+          bestD = d;
+          best = ro;
+        }
+      }
+      return best;
+    }
+
     roachSeeksManhole(ro, now) {
       if (this.isRoachFeedingOnDeadShrimp(ro)) return false;
       const rx = ro.sprite.x;
       const ry = ro.sprite.y;
+      const royale = this._roachRoyaleActive;
+      const frogPanic = royale ? ROACH_MANHOLE_PANIC_FROG * ROACH_ROYALE_PREDATOR_AGRO_MULT : ROACH_MANHOLE_PANIC_FROG;
       for (const lz of this.lizards || []) {
         if (this.arboreal && this.arboreal.liz === lz && !this.arboreal.lizardFled) continue;
         const sp = lz.sprite;
-        if (Math.hypot(sp.x - rx, sp.y - ry) < ROACH_MANHOLE_PANIC_LIZARD) return true;
+        const rad = royale ? ROACH_MANHOLE_PANIC_LIZARD * ROACH_ROYALE_PREDATOR_AGRO_MULT : ROACH_MANHOLE_PANIC_LIZARD;
+        if (Math.hypot(sp.x - rx, sp.y - ry) < rad) return true;
       }
       for (const snk of this.snakes || []) {
-        if (Math.hypot(snk.sprite.x - rx, snk.sprite.y - ry) < ROACH_MANHOLE_PANIC_SNAKE) return true;
+        const rad = royale ? ROACH_MANHOLE_PANIC_SNAKE * ROACH_ROYALE_PREDATOR_AGRO_MULT : ROACH_MANHOLE_PANIC_SNAKE;
+        if (Math.hypot(snk.sprite.x - rx, snk.sprite.y - ry) < rad) return true;
       }
-      for (const fr of this.frogs || []) {
-        const fp = fr.sprite;
-        if (!fp || !fp.active) continue;
-        if (Math.hypot(fp.x - rx, fp.y - ry) < ROACH_MANHOLE_PANIC_FROG) return true;
+      if (royale) {
+        for (const fr of this.frogs || []) {
+          const fp = fr.sprite;
+          if (!fp?.active) continue;
+          if (Math.hypot(fp.x - rx, fp.y - ry) < frogPanic) return true;
+        }
+        for (const m of this.mice || []) {
+          if (Math.hypot(m.sprite.x - rx, m.sprite.y - ry) < MOUSE_MANHOLE_PANIC_FROG * 0.92) return true;
+        }
+        for (const sv of this.sparrows || []) {
+          if (Math.hypot(sv.sprite.x - rx, sv.sprite.y - ry) < SPARROW_ROACH_HUNT_RANGE * 0.55) return true;
+        }
       }
       return false;
+    }
+
+    getMaxRoaches() {
+      return this._roachRoyaleActive ? ROACH_ROYALE_MAX_ROACHES : MAX_ROACHES_NORMAL;
+    }
+
+    removeRoachAt(ri, now) {
+      const ro = this.roaches[ri];
+      if (!ro?.sprite?.active) return false;
+      ro.sprite.destroy();
+      this.roaches.splice(ri, 1);
+      if (this._roachRoyaleActive) {
+        this._roachRoyaleKills += 1;
+        this.checkRoachRoyaleWin(now);
+      }
+      return true;
+    }
+
+    checkRoachRoyaleWin(now) {
+      if (!this._roachRoyaleActive) return;
+      if (this._roachRoyaleKills > ROACH_ROYALE_WIN_KILLS || this.roaches.length === 0) {
+        this.endRoachRoyale(now, true);
+      }
+    }
+
+    startRoachRoyale(now) {
+      this._roachRoyaleActive = true;
+      this._roachRoyaleKills = 0;
+      if (this.arboreal?.liz?.sprite?.active) {
+        const a = this.arboreal;
+        const lp = this.clampPosToPlaza(a.baseX, a.baseY + 2, a.liz.sprite);
+        a.liz.sprite.setPosition(lp.x, lp.y);
+        a.liz.sprite.setDepth(16);
+        this.arboreal = null;
+        this._arborealCooldownUntil = now + 900;
+      }
+      for (const snk of this.snakes || []) {
+        snk.treeEggClimb = null;
+        snk.chasingSparrow = null;
+      }
+      for (const sv of this.sparrows || []) {
+        sv.fleeUntil = 0;
+        sv.beingChased = false;
+        sv.chasedBySnake = null;
+      }
+      this.catChaseMouse = null;
+      this.catChaseSparrow = null;
+      const cap = ROACH_ROYALE_MAX_ROACHES;
+      const burst = Math.min(24, cap - this.roaches.length);
+      for (let k = 0; k < burst; k++) {
+        const pt = this.randomPlazaWalkPointAvoidingPools();
+        const nr = this.createRoachAt(pt.x, pt.y);
+        this.pickRoachTarget(nr);
+        nr.retargetAt = now + k * 60;
+        this.roaches.push(nr);
+      }
+      this.updateRoachRoyaleBanner(now);
+    }
+
+    endRoachRoyale(now, won) {
+      if (!this._roachRoyaleActive) return;
+      this._roachRoyaleActive = false;
+      this._roachRoyaleEndedEarly = true;
+      if (won) this.awardRoachRoyaleTrophy(now);
+      this.returnFrogsToHomePools();
+      this.updateRoachRoyaleBanner(now);
+    }
+
+    returnFrogsToHomePools() {
+      for (const fr of this.frogs || []) {
+        if (!fr.sprite?.active) continue;
+        const home = fr.pondHome || fr.home;
+        if (!home) continue;
+        fr.returningHome = true;
+        fr.retargetAt = 0;
+        fr.target.x = home.x;
+        fr.target.y = home.y;
+      }
+    }
+
+    updateRoachRoyale(now) {
+      if (!this._roachRoyaleCycleStartAt) this._roachRoyaleCycleStartAt = now;
+      const cycleIndex = Math.floor((now - this._roachRoyaleCycleStartAt) / ROACH_ROYALE_CYCLE_MS);
+      const cyclePos = (now - this._roachRoyaleCycleStartAt) % ROACH_ROYALE_CYCLE_MS;
+      if (cycleIndex !== this._roachRoyaleCycleIndex) {
+        this._roachRoyaleCycleIndex = cycleIndex;
+        this._roachRoyaleEndedEarly = false;
+        this._roachRoyaleKills = 0;
+      }
+      const shouldBeActive =
+        !this._roachRoyaleEndedEarly && cyclePos < ROACH_ROYALE_DURATION_MS;
+      const wasActive = this._roachRoyaleActive;
+      if (shouldBeActive && !wasActive) this.startRoachRoyale(now);
+      else if (!shouldBeActive && wasActive) this.endRoachRoyale(now, false);
+      else if (this._roachRoyaleActive) {
+        this.enforceRoachRoyalePredatorFocus();
+        this.updateRoachRoyaleBanner(now);
+      }
+      this.updateRoachRoyaleTrophyBoosts(now);
+    }
+
+    /** 大逃杀进行中：猎食者只追蟑，打断爬树/爬蛋/追雀等其它行为 */
+    enforceRoachRoyalePredatorFocus() {
+      this.catChaseMouse = null;
+      this.catChaseSparrow = null;
+      if (this.arboreal?.liz?.sprite?.active) {
+        const a = this.arboreal;
+        const lp = this.clampPosToPlaza(a.baseX, a.baseY + 2, a.liz.sprite);
+        a.liz.sprite.setPosition(lp.x, lp.y);
+        a.liz.sprite.setDepth(16);
+        this.arboreal = null;
+        this._arborealCooldownUntil = this.time.now + 900;
+      }
+      for (const snk of this.snakes || []) {
+        snk.treeEggClimb = null;
+        snk.chasingSparrow = null;
+      }
+      for (const sv of this.sparrows || []) {
+        sv.fleeUntil = 0;
+        sv.beingChased = false;
+        sv.chasedBySnake = null;
+      }
+    }
+
+    updateRoachRoyaleBanner(now) {
+      if (!this._roachRoyaleBanner) return;
+      if (!this._roachRoyaleActive) {
+        this._roachRoyaleBanner.setVisible(false);
+        return;
+      }
+      const ui = this.getRoachRoyaleUiState(now);
+      this._roachRoyaleBanner.setVisible(true);
+      this._roachRoyaleBanner.setText(
+        `蟑螂大逃杀 · 剩余 ${formatRoyaleClock(ui.remainSec)} · 猎食 ${ui.kills}/${ui.winKills} · 蟑 ${ui.roaches}/${ui.maxRoaches}`,
+      );
+    }
+
+    getRoachRoyaleUiState(now = this.time?.now ?? 0) {
+      const cycleStart = this._roachRoyaleCycleStartAt || now;
+      const cyclePos = (now - cycleStart) % ROACH_ROYALE_CYCLE_MS;
+      const active = !!this._roachRoyaleActive;
+      let remainMs;
+      if (active) {
+        remainMs = ROACH_ROYALE_DURATION_MS - cyclePos;
+      } else {
+        remainMs = ROACH_ROYALE_CYCLE_MS - cyclePos;
+      }
+      const remainSec = Math.max(0, Math.ceil(remainMs / 1000));
+      return {
+        active,
+        remainSec,
+        nextStartSec: active ? 0 : remainSec,
+        kills: this._roachRoyaleKills || 0,
+        roaches: this.roaches?.length || 0,
+        maxRoaches: ROACH_ROYALE_MAX_ROACHES,
+        winKills: ROACH_ROYALE_WIN_KILLS + 1,
+        cycleMin: ROACH_ROYALE_CYCLE_MS / 60_000,
+        durationMin: ROACH_ROYALE_DURATION_MS / 60_000,
+        endedEarly: !!this._roachRoyaleEndedEarly,
+      };
+    }
+
+    collectRoachPredatorCandidates() {
+      const out = [];
+      for (const lz of this.lizards || []) {
+        if (lz.sprite?.active) out.push({ sprite: lz.sprite, kind: "lizard" });
+      }
+      for (const snk of this.snakes || []) {
+        if (snk.sprite?.active) out.push({ sprite: snk.sprite, kind: "snake" });
+      }
+      for (const fr of this.frogs || []) {
+        if (fr.sprite?.active) out.push({ sprite: fr.sprite, kind: "frog" });
+      }
+      for (const m of this.mice || []) {
+        if (m.sprite?.active) out.push({ sprite: m.sprite, kind: "mouse" });
+      }
+      for (const sv of this.sparrows || []) {
+        if (sv.sprite?.active) out.push({ sprite: sv.sprite, kind: "sparrow" });
+      }
+      return out;
+    }
+
+    awardRoachRoyaleTrophy(now) {
+      const candidates = this.collectRoachPredatorCandidates();
+      if (!candidates.length) return;
+      const pick = candidates[Math.floor(Math.random() * candidates.length)];
+      const sp = pick.sprite;
+      const baseScale = sp.scaleX || 1;
+      sp.setScale(baseScale * 2);
+      const trophy = this.add
+        .image(sp.x, sp.y - sp.displayHeight * 0.52, "roachRoyaleTrophy")
+        .setOrigin(0.5, 1)
+        .setDepth((sp.depth || 16) + 2)
+        .setScale(0.55 * (this.plazaScale || 1));
+      this._roachRoyaleTrophyBoosts.push({
+        sprite: sp,
+        trophy,
+        baseScale,
+        endAt: now + ROACH_ROYALE_TROPHY_MS,
+      });
+    }
+
+    updateRoachRoyaleTrophyBoosts(now) {
+      for (let i = this._roachRoyaleTrophyBoosts.length - 1; i >= 0; i--) {
+        const tb = this._roachRoyaleTrophyBoosts[i];
+        if (!tb.sprite?.active || now >= tb.endAt) {
+          if (tb.sprite?.active) tb.sprite.setScale(tb.baseScale);
+          tb.trophy?.destroy();
+          this._roachRoyaleTrophyBoosts.splice(i, 1);
+          continue;
+        }
+        tb.trophy.setPosition(tb.sprite.x, tb.sprite.y - tb.sprite.displayHeight * 0.52);
+      }
+    }
+
+    roachRoyaleFleeVector(rx, ry, fleeReduce, dt) {
+      let fx = 0;
+      let fy = 0;
+      const ps = this.plazaScale || 1;
+      const push = (px, py, radius, accel) => {
+        const dx = rx - px;
+        const dy = ry - py;
+        const d = Math.hypot(dx, dy);
+        if (d < radius && d > 0.01) {
+          const w = (radius - d) / radius;
+          fx += (dx / d) * w * accel;
+          fy += (dy / d) * w * accel;
+        }
+      };
+      const mult = ROACH_ROYALE_FLEE_ACCEL_MULT;
+      for (const lz of this.lizards || []) {
+        if (this.arboreal && this.arboreal.liz === lz && !this.arboreal.lizardFled) continue;
+        push(lz.sprite.x, lz.sprite.y, 72 * ps, 14 * mult);
+      }
+      for (const snk of this.snakes || []) {
+        push(snk.sprite.x, snk.sprite.y, 68 * ps, 12 * mult);
+      }
+      for (const fr of this.frogs || []) {
+        if (!fr.sprite?.active) continue;
+        push(fr.sprite.x, fr.sprite.y, 88 * ps, 11 * mult);
+      }
+      for (const m of this.mice || []) {
+        push(m.sprite.x, m.sprite.y, 58 * ps, 10 * mult);
+      }
+      for (const sv of this.sparrows || []) {
+        push(sv.sprite.x, sv.sprite.y, 62 * ps, 9 * mult);
+      }
+      const fl = Math.hypot(fx, fy);
+      if (fl > 0.01) {
+        return {
+          dx: (fx / fl) * ROACH_ROYALE_FLEE_ACCEL_MULT * fleeReduce * dt,
+          dy: (fy / fl) * ROACH_ROYALE_FLEE_ACCEL_MULT * fleeReduce * dt,
+        };
+      }
+      return { dx: 0, dy: 0 };
     }
 
     tryManholeTeleportMouse(m, now) {
@@ -2779,6 +3090,24 @@ function initWorld() {
       fp.setPosition(bestNb.x + ux * shoreMax, bestNb.y + uy * shoreMax);
     }
 
+    pickFrogTargetInPool(frog, poolIndex) {
+      const pool = this.plazaPools?.[poolIndex];
+      if (!pool) {
+        this.pickFrogTarget(frog);
+        return;
+      }
+      if (Math.random() < 0.52) {
+        const p = this.randomPointInsidePlazaPool(pool);
+        frog.target.x = p.x;
+        frog.target.y = p.y;
+      } else {
+        const p = this.randomPointNearPlazaPool(pool);
+        const c = this.clampPosToPlaza(p.x, p.y, null, true);
+        frog.target.x = c.x;
+        frog.target.y = c.y;
+      }
+    }
+
     pickFrogTarget(frog) {
       if (!this.plazaPools || !this.plazaPools.length) {
         const pt = this.randomPlazaWalkPointAvoidingPools();
@@ -2801,7 +3130,7 @@ function initWorld() {
       }
     }
 
-    createFrogAt(x, y) {
+    createFrogAt(x, y, poolIndex = 0) {
       const sprite = this.add
         .image(x, y, "frog")
         .setOrigin(0.5, 0.52)
@@ -2810,9 +3139,12 @@ function initWorld() {
       return {
         sprite,
         home: { x, y },
+        pondHome: { x, y },
+        poolIndex,
         target: { x, y },
         retargetAt: 0,
         nextEatAt: 0,
+        returningHome: false,
       };
     }
 
@@ -3082,6 +3414,41 @@ function initWorld() {
         ro.target.x = r.minX + Math.random() * (r.maxX - r.minX);
         ro.target.y = r.minY + Math.random() * (r.maxY - r.minY);
       }
+    }
+
+    pickRoachTargetAwayFromPredators(ro) {
+      const rx = ro.sprite.x;
+      const ry = ro.sprite.y;
+      let cx = 0;
+      let cy = 0;
+      let n = 0;
+      const add = (px, py) => {
+        cx += px;
+        cy += py;
+        n += 1;
+      };
+      for (const lz of this.lizards || []) add(lz.sprite.x, lz.sprite.y);
+      for (const snk of this.snakes || []) add(snk.sprite.x, snk.sprite.y);
+      for (const fr of this.frogs || []) {
+        if (fr.sprite?.active) add(fr.sprite.x, fr.sprite.y);
+      }
+      for (const m of this.mice || []) add(m.sprite.x, m.sprite.y);
+      for (const sv of this.sparrows || []) add(sv.sprite.x, sv.sprite.y);
+      if (!n) {
+        this.pickRoachTarget(ro);
+        return;
+      }
+      cx /= n;
+      cy /= n;
+      const awayX = rx - cx;
+      const awayY = ry - cy;
+      const al = Math.hypot(awayX, awayY) || 1;
+      const dist = 90 + Math.random() * 110;
+      const tx = rx + (awayX / al) * dist + (Math.random() - 0.5) * 36;
+      const ty = ry + (awayY / al) * dist + (Math.random() - 0.5) * 36;
+      const c = this.clampPosToPlaza(tx, ty);
+      ro.target.x = c.x;
+      ro.target.y = c.y;
     }
 
     createRoachAt(x, y) {
@@ -3374,6 +3741,7 @@ function initWorld() {
       this.updateDeadStallShrimpSites(now);
       this.updateStallShrimpReplacements(now, dt);
       this.updatePondFish(now, dt);
+      this.updateRoachRoyale(now);
       const cat = this.cat;
       if (!cat) return;
 
@@ -3392,10 +3760,13 @@ function initWorld() {
       const MOUSE_BREED_DIST = 22;
       const MAX_MICE = 12;
       const MOUSE_ROACH_EAT_DIST = 10;
-      const MOUSE_ROACH_EAT_COOLDOWN_MS = 30000;
+      const MOUSE_ROACH_EAT_COOLDOWN_MS = this._roachRoyaleActive
+        ? ROACH_ROYALE_MOUSE_EAT_COOLDOWN_MS
+        : 30000;
+      const royale = this._roachRoyaleActive;
 
       const herdSeek =
-        this.mice.length < 6 && this.mice.length > 1;
+        !royale && this.mice.length < 6 && this.mice.length > 1;
       const MOUSE_HERD_AVOID_CAT_OUT = 78;
       const MOUSE_HERD_AVOID_CAT_IN = 40;
 
@@ -3467,9 +3838,40 @@ function initWorld() {
       }
 
       for (const m of this.mice) {
+        if (royale && this.roaches.length) {
+          let mx = m.sprite.x;
+          let my = m.sprite.y;
+          const chaseRo = this.findNearestRoachPrey(mx, my);
+          if (chaseRo) {
+            const mtx = chaseRo.sprite.x - mx;
+            const mty = chaseRo.sprite.y - my;
+            const mlen = Math.hypot(mtx, mty) || 1;
+            mx += (mtx / mlen) * 28 * dt;
+            my += (mty / mlen) * 28 * dt;
+            m.sprite.setPosition(mx, my);
+            m.sprite.setFlipX(mtx < 0);
+            this.clampSpriteToPlaza(m.sprite);
+            if (now >= (m.nextRoachEatAt || 0)) {
+              for (let ri = this.roaches.length - 1; ri >= 0; ri--) {
+                const ro = this.roaches[ri];
+                if (this.isRoachFeedingOnDeadShrimp(ro)) continue;
+                if (
+                  Math.hypot(ro.sprite.x - m.sprite.x, ro.sprite.y - m.sprite.y) <
+                  MOUSE_ROACH_EAT_DIST
+                ) {
+                  this.removeRoachAt(ri, now);
+                  m.nextRoachEatAt = now + MOUSE_ROACH_EAT_COOLDOWN_MS;
+                  break;
+                }
+              }
+            }
+          }
+          continue;
+        }
+
         if (this.tryManholeTeleportMouse(m, now)) continue;
 
-        if (!herdSeek) {
+        if (!herdSeek && !royale) {
           if (now > m.retargetAt) {
             m.retargetAt = now + 1100 + Math.random() * 1100;
             this.pickMouseTarget(m);
@@ -3483,10 +3885,21 @@ function initWorld() {
         let mlen;
         let flipLeft;
 
-        const mousePanic = this.mouseSeeksManhole(m, cx0, cy0, now);
+        let chaseRoachMouse = null;
+        if (royale && this.roaches.length) {
+          chaseRoachMouse = this.findNearestRoachPrey(mx, my);
+        }
+
+        const mousePanic =
+          royale && chaseRoachMouse ? false : this.mouseSeeksManhole(m, cx0, cy0, now);
         const mh = mousePanic && this.manholes.length ? this.nearestManholeTo(mx, my) : null;
 
-        if (herdSeek && !mousePanic) {
+        if (chaseRoachMouse) {
+          mtx = chaseRoachMouse.sprite.x - mx;
+          mty = chaseRoachMouse.sprite.y - my;
+          mlen = Math.hypot(mtx, mty) || 1;
+          flipLeft = mtx < 0;
+        } else if (herdSeek && !mousePanic) {
           let bestD = Infinity;
           let ox = mx;
           let oy = my;
@@ -3532,9 +3945,12 @@ function initWorld() {
           flipLeft = (m.target.x - mx) < 0;
         }
 
-        const vMouse = 21;
+        const vMouse = chaseRoachMouse ? 28 : 21;
 
-        if (herdSeek && !mousePanic) {
+        if (chaseRoachMouse) {
+          mx += (mtx / mlen) * vMouse * dt;
+          my += (mty / mlen) * vMouse * dt;
+        } else if (herdSeek && !mousePanic) {
           let sx = mtx / mlen;
           let sy = mty / mlen;
           const toCatX = cx0 - mx;
@@ -3584,14 +4000,13 @@ function initWorld() {
             const ro = this.roaches[ri];
             if (this.isRoachFeedingOnDeadShrimp(ro)) continue;
             if (Math.hypot(ro.sprite.x - m.sprite.x, ro.sprite.y - m.sprite.y) < MOUSE_ROACH_EAT_DIST) {
-              ro.sprite.destroy();
-              this.roaches.splice(ri, 1);
+              this.removeRoachAt(ri, now);
               m.nextRoachEatAt = now + MOUSE_ROACH_EAT_COOLDOWN_MS;
               break;
             }
           }
         }
-        if (now >= (m.nextEggEatAt || 0)) {
+        if (now >= (m.nextEggEatAt || 0) && !royale) {
           for (let gi = this.lizardEggs.length - 1; gi >= 0; gi--) {
             const egg = this.lizardEggs[gi];
             if (Math.hypot(egg.sprite.x - m.sprite.x, egg.sprite.y - m.sprite.y) < EGG_EAT_DIST) {
@@ -3625,15 +4040,16 @@ function initWorld() {
         }
       }
 
-      const ROACH_AGRO = 45;
+      const ROACH_AGRO = royale ? 45 * ROACH_ROYALE_PREDATOR_AGRO_MULT : 45;
       const ROACH_EAT = 5;
-      const V_ROACH = 8.2;
+      const V_ROACH = royale ? 8.2 * ROACH_ROYALE_FLEE_SPEED_MULT : 8.2;
       /** 略放宽，方便在蜥蜴压力下仍能碰头繁殖 */
       const ROACH_BREED_DIST = 26;
-      const MAX_ROACHES = 96;
+      const MAX_ROACHES = this.getMaxRoaches();
       /** 全广场只剩 1 只蟑螂时立刻在旁补殖的数量（不含母体；受 MAX_ROACHES 截断） */
-      const ROACH_LAST_STAND_BROOD = 10;
-      const V_LIZARD_CHASE_ROACH = 20;
+      const ROACH_LAST_STAND_BROOD = royale ? ROACH_ROYALE_BREED_BATCH : ROACH_LAST_STAND_BROOD_NORMAL;
+      const ROACH_BREED_BATCH = royale ? ROACH_ROYALE_BREED_BATCH : ROACH_BREED_BATCH_NORMAL;
+      const V_LIZARD_CHASE_ROACH = royale ? 20 * 1.35 : 20;
       const ROACH_FLEE_LIZARD_RADIUS = 50;
       const ROACH_FLEE_ACCEL = 13;
       const ROACH_FLEE_SNAKE_RADIUS = 44;
@@ -3650,23 +4066,20 @@ function initWorld() {
 
         let rx = ro.sprite.x;
         let ry = ro.sprite.y;
-        const deadTarget = !roachMh ? this.findNearestDeadStallShrimp(rx, ry) : null;
+        const deadTarget =
+          royale || roachMh ? null : this.findNearestDeadStallShrimp(rx, ry);
         const deadShrimpSeek = !!deadTarget;
         const deadFeeding = this.isRoachFeedingOnDeadShrimp(ro);
         const psRoach = this.plazaScale || 1;
 
         if (!roachMh && !deadShrimpSeek && now > ro.retargetAt) {
-          ro.retargetAt = now + 1600 + Math.random() * 2000;
-          this.pickRoachTarget(ro);
+          ro.retargetAt = now + (royale ? 420 : 1600) + Math.random() * (royale ? 600 : 2000);
+          if (royale) this.pickRoachTargetAwayFromPredators(ro);
+          else this.pickRoachTarget(ro);
         }
         let rtx;
         let rty;
         let rlen;
-        if (!roachMh && deadShrimpSeek) {
-          rtx = deadTarget.x - rx;
-          rty = deadTarget.y - ry;
-          rlen = Math.hypot(rtx, rty) || 1;
-        }
         if (roachMh) {
           rtx = roachMh.x - rx;
           rty = roachMh.y - ry;
@@ -3676,7 +4089,11 @@ function initWorld() {
             rty = 0;
             rlen = 1;
           }
-        } else if (!deadShrimpSeek) {
+        } else if (deadShrimpSeek) {
+          rtx = deadTarget.x - rx;
+          rty = deadTarget.y - ry;
+          rlen = Math.hypot(rtx, rty) || 1;
+        } else {
           rtx = ro.target.x - rx;
           rty = ro.target.y - ry;
           rlen = Math.hypot(rtx, rty) || 1;
@@ -3729,6 +4146,11 @@ function initWorld() {
             rx += (dx / d) * ROACH_FLEE_SNAKE_ACCEL * fleeReduce * dt;
             ry += (dy / d) * ROACH_FLEE_SNAKE_ACCEL * fleeReduce * dt;
           }
+        }
+        if (royale) {
+          const rv = this.roachRoyaleFleeVector(rx, ry, fleeReduce, dt);
+          rx += rv.dx;
+          ry += rv.dy;
         }
 
         const sepR = ROACH_SEPARATE_RADIUS * psRoach;
@@ -3795,7 +4217,7 @@ function initWorld() {
             const rb = this.roaches[j].sprite;
             if (Math.hypot(ra.x - rb.x, ra.y - rb.y) < ROACH_BREED_DIST) {
               const room = MAX_ROACHES - this.roaches.length;
-              const addN = Math.min(3, room);
+              const addN = Math.min(ROACH_BREED_BATCH, room);
               for (let k = 0; k < addN; k++) {
                 const nx = (ra.x + rb.x) / 2 + (Math.random() - 0.5) * 22;
                 const ny = (ra.y + rb.y) / 2 + (Math.random() - 0.5) * 22;
@@ -3812,7 +4234,7 @@ function initWorld() {
         }
       }
 
-      const V_SNAKE = 22;
+      const V_SNAKE = royale ? 24 : 22;
       const SNAKE_HUNT_RANGE = 118;
       const SNAKE_WRIGGLE_SPEED = 13;
       const SNAKE_SIDE_SLEW = 26;
@@ -3821,13 +4243,18 @@ function initWorld() {
       const SNAKE_EAT_ROACH_COOLDOWN_MS = 850;
 
       for (const snk of this.snakes) {
-        if (this.updateSnakeSparrowEggClimb(snk, now, dt)) continue;
+        if (!royale && this.updateSnakeSparrowEggClimb(snk, now, dt)) continue;
+        if (royale) {
+          snk.treeEggClimb = null;
+          snk.chasingSparrow = null;
+        }
 
         const sp = snk.sprite;
         let sx = sp.x;
         let sy = sp.y;
 
         if (
+          !royale &&
           now >= (snk.nextEatSparrowEggAt || 0) &&
           !snk.treeEggClimb &&
           this.sparrowEggs.length
@@ -3849,58 +4276,68 @@ function initWorld() {
 
         let preyX = null;
         let preyY = null;
-        let bestPd = SNAKE_HUNT_RANGE;
+        let bestPd = royale
+          ? Infinity
+          : SNAKE_HUNT_RANGE;
         let huntSparrow = null;
-        const canHuntMouse = now >= (snk.nextEatMouseAt || 0);
-        const canHuntEgg = now >= (snk.nextEatEggAt || 0);
+        const canHuntMouse = !royale && now >= (snk.nextEatMouseAt || 0);
+        const canHuntEgg = !royale && now >= (snk.nextEatEggAt || 0);
         snk.chasingSparrow = null;
-        if (canHuntMouse) {
-          for (const m of this.mice) {
-            const d = Math.hypot(m.sprite.x - sx, m.sprite.y - sy);
-            if (d < bestPd) {
-              bestPd = d;
-              preyX = m.sprite.x;
-              preyY = m.sprite.y;
-            }
-          }
-        }
-        for (const ro of this.roaches) {
-          if (this.isRoachFeedingOnDeadShrimp(ro)) continue;
-          const d = Math.hypot(ro.sprite.x - sx, ro.sprite.y - sy);
-          if (d < bestPd) {
-            bestPd = d;
+        if (royale) {
+          const ro = this.findNearestRoachPrey(sx, sy);
+          if (ro) {
             preyX = ro.sprite.x;
             preyY = ro.sprite.y;
           }
-        }
-        for (const lz of this.lizards) {
-          if (this.arboreal && this.arboreal.liz === lz && !this.arboreal.lizardFled) continue;
-          const lp = lz.sprite;
-          const d = Math.hypot(lp.x - sx, lp.y - sy);
-          if (d < bestPd) {
-            bestPd = d;
-            preyX = lp.x;
-            preyY = lp.y;
-          }
-        }
-        if (canHuntEgg) {
-          for (const egg of this.lizardEggs) {
-            const d = Math.hypot(egg.sprite.x - sx, egg.sprite.y - sy);
-            if (d < bestPd) {
-              bestPd = d;
-              preyX = egg.sprite.x;
-              preyY = egg.sprite.y;
+        } else {
+          if (canHuntMouse) {
+            for (const m of this.mice) {
+              const d = Math.hypot(m.sprite.x - sx, m.sprite.y - sy);
+              if (d < bestPd) {
+                bestPd = d;
+                preyX = m.sprite.x;
+                preyY = m.sprite.y;
+              }
             }
           }
-        }
-        for (const sv of this.sparrows) {
-          if (sv.mode !== "land" || sv.fleeUntil > now) continue;
-          const d = Math.hypot(sv.sprite.x - sx, sv.sprite.y - sy);
-          if (d < bestPd) {
-            bestPd = d;
-            preyX = sv.sprite.x;
-            preyY = sv.sprite.y;
-            huntSparrow = sv;
+          for (const ro of this.roaches) {
+            if (this.isRoachFeedingOnDeadShrimp(ro)) continue;
+            const d = Math.hypot(ro.sprite.x - sx, ro.sprite.y - sy);
+            if (d < bestPd) {
+              bestPd = d;
+              preyX = ro.sprite.x;
+              preyY = ro.sprite.y;
+            }
+          }
+          for (const lz of this.lizards) {
+            if (this.arboreal && this.arboreal.liz === lz && !this.arboreal.lizardFled) continue;
+            const lp = lz.sprite;
+            const d = Math.hypot(lp.x - sx, lp.y - sy);
+            if (d < bestPd) {
+              bestPd = d;
+              preyX = lp.x;
+              preyY = lp.y;
+            }
+          }
+          if (canHuntEgg) {
+            for (const egg of this.lizardEggs) {
+              const d = Math.hypot(egg.sprite.x - sx, egg.sprite.y - sy);
+              if (d < bestPd) {
+                bestPd = d;
+                preyX = egg.sprite.x;
+                preyY = egg.sprite.y;
+              }
+            }
+          }
+          for (const sv of this.sparrows) {
+            if (sv.mode !== "land" || sv.fleeUntil > now) continue;
+            const d = Math.hypot(sv.sprite.x - sx, sv.sprite.y - sy);
+            if (d < bestPd) {
+              bestPd = d;
+              preyX = sv.sprite.x;
+              preyY = sv.sprite.y;
+              huntSparrow = sv;
+            }
           }
         }
 
@@ -3947,7 +4384,7 @@ function initWorld() {
         }
         this.clampSpriteToPlaza(sp);
 
-        if (now >= (snk.nextEatMouseAt || 0)) {
+        if (!royale && now >= (snk.nextEatMouseAt || 0)) {
           for (let mi = this.mice.length - 1; mi >= 0; mi--) {
             const m = this.mice[mi];
             if (Math.hypot(m.sprite.x - sp.x, m.sprite.y - sp.y) < SNAKE_EAT_DIST) {
@@ -3963,14 +4400,13 @@ function initWorld() {
             const ro = this.roaches[ri];
             if (this.isRoachFeedingOnDeadShrimp(ro)) continue;
             if (Math.hypot(ro.sprite.x - sp.x, ro.sprite.y - sp.y) < SNAKE_EAT_DIST) {
-              ro.sprite.destroy();
-              this.roaches.splice(ri, 1);
-              snk.nextEatRoachAt = now + SNAKE_EAT_ROACH_COOLDOWN_MS;
+              this.removeRoachAt(ri, now);
+              snk.nextEatRoachAt = now + (royale ? 420 : SNAKE_EAT_ROACH_COOLDOWN_MS);
               break;
             }
           }
         }
-        if (now >= (snk.nextEatLizardAt || 0)) {
+        if (!royale && now >= (snk.nextEatLizardAt || 0)) {
           for (let li = this.lizards.length - 1; li >= 0; li--) {
             const lz = this.lizards[li];
             if (this.arboreal && this.arboreal.liz === lz && !this.arboreal.lizardFled) continue;
@@ -3984,7 +4420,7 @@ function initWorld() {
             }
           }
         }
-        if (now >= (snk.nextEatEggAt || 0)) {
+        if (!royale && now >= (snk.nextEatEggAt || 0)) {
           for (let gi = this.lizardEggs.length - 1; gi >= 0; gi--) {
             const egg = this.lizardEggs[gi];
             if (Math.hypot(egg.sprite.x - sp.x, egg.sprite.y - sp.y) < EGG_EAT_DIST) {
@@ -3996,7 +4432,11 @@ function initWorld() {
             }
           }
         }
-        if (snk.chasingSparrow?.sprite?.active && snk.chasingSparrow.mode === "land") {
+        if (
+          !royale &&
+          snk.chasingSparrow?.sprite?.active &&
+          snk.chasingSparrow.mode === "land"
+        ) {
           const sv = snk.chasingSparrow;
           if (Math.hypot(sv.sprite.x - sp.x, sv.sprite.y - sp.y) < SNAKE_EAT_DIST) {
             this.resolveSparrowPredatorCatch(sv, now);
@@ -4007,7 +4447,7 @@ function initWorld() {
       }
 
       let skipCatGround = false;
-      if (this.arboreal) {
+      if (this.arboreal && !royale) {
         const a = this.arboreal;
         const treeLizSp = a.liz.sprite;
         if (a.catJoined && a.lizardFled && a.catDownAt != null && now >= a.catDownAt) {
@@ -4082,13 +4522,17 @@ function initWorld() {
         const liz = lz.sprite;
 
         let chaseRoach = null;
-        let bestRoachD = ROACH_AGRO;
-        for (const ro of this.roaches) {
-          if (this.isRoachFeedingOnDeadShrimp(ro)) continue;
-          const rd = Math.hypot(ro.sprite.x - liz.x, ro.sprite.y - liz.y);
-          if (rd < bestRoachD) {
-            bestRoachD = rd;
-            chaseRoach = ro;
+        if (royale && this.roaches.length) {
+          chaseRoach = this.findNearestRoachPrey(liz.x, liz.y);
+        } else {
+          let bestRoachD = ROACH_AGRO;
+          for (const ro of this.roaches) {
+            if (this.isRoachFeedingOnDeadShrimp(ro)) continue;
+            const rd = Math.hypot(ro.sprite.x - liz.x, ro.sprite.y - liz.y);
+            if (rd < bestRoachD) {
+              bestRoachD = rd;
+              chaseRoach = ro;
+            }
           }
         }
 
@@ -4102,7 +4546,7 @@ function initWorld() {
           lx += (tx / len) * V_LIZARD_CHASE_ROACH * dt;
           ly += (ty / len) * V_LIZARD_CHASE_ROACH * dt;
           liz.setFlipX(tx > 0);
-        } else {
+        } else if (!royale) {
           if (now > lz.retargetAt) {
             lz.retargetAt = now + 1600 + Math.random() * 1400;
             this.pickLizardTarget(lz);
@@ -4126,7 +4570,7 @@ function initWorld() {
         let dx = lx - cx0;
         let dy = ly - cy0;
         let dist = Math.hypot(dx, dy) || 1;
-        if (dist < 40) {
+        if (!royale && dist < 40) {
           const flee = 78 * dt;
           lx += (dx / dist) * flee;
           ly += (dy / dist) * flee;
@@ -4136,8 +4580,7 @@ function initWorld() {
           const ro = this.roaches[ri];
           if (this.isRoachFeedingOnDeadShrimp(ro)) continue;
           if (Math.hypot(ro.sprite.x - lx, ro.sprite.y - ly) < ROACH_EAT) {
-            ro.sprite.destroy();
-            this.roaches.splice(ri, 1);
+            this.removeRoachAt(ri, now);
             break;
           }
         }
@@ -4159,61 +4602,93 @@ function initWorld() {
         }
         this.clampSpriteToPlaza(liz);
 
-        if (!this.arboreal && now > this._arborealCooldownUntil) {
+        if (!royale && !this.arboreal && now > this._arborealCooldownUntil) {
           const nearTree = this.findNearestTreeSpot(liz.x, liz.y, 32);
           if (nearTree) this.startArboreal(nearTree, now, lz);
         }
       }
 
-      const V_FROG = 19;
+      const V_FROG = royale ? 19 * 1.22 : 19;
       const fPS = this.plazaScale || 1;
-      const FROG_HUNT_RANGE = 112 * fPS;
+      const FROG_HUNT_RANGE = royale ? Infinity : 112 * fPS;
       const FROG_EAT_DIST = 12 * fPS;
-      const FROG_EAT_COOLDOWN_MS = 720;
+      const FROG_EAT_COOLDOWN_MS = royale ? 420 : 720;
 
       for (const fr of this.frogs) {
         const fp = fr.sprite;
         let fx = fp.x;
         let fy = fp.y;
 
+        if (fr.returningHome) {
+          const tx = fr.target.x - fx;
+          const ty = fr.target.y - fy;
+          const len = Math.hypot(tx, ty) || 1;
+          const vReturn = 22;
+          if (len < 10) {
+            fr.returningHome = false;
+            const home = fr.pondHome || fr.home;
+            fp.setPosition(home.x, home.y);
+            fr.home.x = home.x;
+            fr.home.y = home.y;
+            this.pickFrogTargetInPool(fr, fr.poolIndex ?? 0);
+            fr.retargetAt = now + 400;
+          } else {
+            fx += (tx / len) * vReturn * dt;
+            fy += (ty / len) * vReturn * dt;
+            fp.setPosition(fx, fy);
+            fp.setRotation(Math.atan2(ty, tx) * 0.08);
+            fp.setFlipX(tx < 0);
+            this.clampSpriteToPlaza(fp, true);
+          }
+          continue;
+        }
+
         let preyX = null;
         let preyY = null;
         let bestFd = FROG_HUNT_RANGE;
-        for (const m of this.mice) {
-          const d = Math.hypot(m.sprite.x - fx, m.sprite.y - fy);
-          if (d < bestFd) {
-            bestFd = d;
-            preyX = m.sprite.x;
-            preyY = m.sprite.y;
-          }
-        }
-        for (const ro of this.roaches) {
-          if (this.isRoachFeedingOnDeadShrimp(ro)) continue;
-          const d = Math.hypot(ro.sprite.x - fx, ro.sprite.y - fy);
-          if (d < bestFd) {
-            bestFd = d;
+        if (royale) {
+          const ro = this.findNearestRoachPrey(fx, fy);
+          if (ro) {
             preyX = ro.sprite.x;
             preyY = ro.sprite.y;
           }
-        }
-        for (const lz of this.lizards) {
-          if (this.arboreal && this.arboreal.liz === lz && !this.arboreal.lizardFled) continue;
-          const lsp = lz.sprite;
-          const d = Math.hypot(lsp.x - fx, lsp.y - fy);
-          if (d < bestFd) {
-            bestFd = d;
-            preyX = lsp.x;
-            preyY = lsp.y;
+        } else {
+          for (const m of this.mice) {
+            const d = Math.hypot(m.sprite.x - fx, m.sprite.y - fy);
+            if (d < bestFd) {
+              bestFd = d;
+              preyX = m.sprite.x;
+              preyY = m.sprite.y;
+            }
           }
-        }
-        for (const site of this.stallShrimpSites || []) {
-          if (!this.canFrogTargetStallShrimp(site)) continue;
-          const sp = site.npc;
-          const d = Math.hypot(sp.x - fx, sp.y - fy);
-          if (d < bestFd) {
-            bestFd = d;
-            preyX = sp.x;
-            preyY = sp.y;
+          for (const ro of this.roaches) {
+            if (this.isRoachFeedingOnDeadShrimp(ro)) continue;
+            const d = Math.hypot(ro.sprite.x - fx, ro.sprite.y - fy);
+            if (d < bestFd) {
+              bestFd = d;
+              preyX = ro.sprite.x;
+              preyY = ro.sprite.y;
+            }
+          }
+          for (const lz of this.lizards) {
+            if (this.arboreal && this.arboreal.liz === lz && !this.arboreal.lizardFled) continue;
+            const lsp = lz.sprite;
+            const d = Math.hypot(lsp.x - fx, lsp.y - fy);
+            if (d < bestFd) {
+              bestFd = d;
+              preyX = lsp.x;
+              preyY = lsp.y;
+            }
+          }
+          for (const site of this.stallShrimpSites || []) {
+            if (!this.canFrogTargetStallShrimp(site)) continue;
+            const sp = site.npc;
+            const d = Math.hypot(sp.x - fx, sp.y - fy);
+            if (d < bestFd) {
+              bestFd = d;
+              preyX = sp.x;
+              preyY = sp.y;
+            }
           }
         }
         let ftx;
@@ -4224,7 +4699,7 @@ function initWorld() {
         } else {
           if (now > fr.retargetAt) {
             fr.retargetAt = now + 1800 + Math.random() * 1600;
-            this.pickFrogTarget(fr);
+            this.pickFrogTargetInPool(fr, fr.poolIndex ?? 0);
           }
           ftx = fr.target.x;
           fty = fr.target.y;
@@ -4239,25 +4714,27 @@ function initWorld() {
         fp.setRotation(Math.atan2(fdy, fdx) * 0.08);
         fp.setFlipX(fdx < 0);
         this.clampSpriteToPlaza(fp, true);
-        this.clampFrogToPoolShore(fp);
+        if (!royale || preyX == null) this.clampFrogToPoolShore(fp);
         if (this.bounceIfNearFountain(fp, now)) {
           fr.home.x = fp.x;
           fr.home.y = fp.y;
-          this.pickFrogTarget(fr);
+          this.pickFrogTargetInPool(fr, fr.poolIndex ?? 0);
           fr.retargetAt = now + 500;
         }
         this.clampSpriteToPlaza(fp, true);
-        this.clampFrogToPoolShore(fp);
+        if (!royale || preyX == null) this.clampFrogToPoolShore(fp);
 
         if (now >= (fr.nextEatAt || 0)) {
           let ate = false;
-          for (let mi = this.mice.length - 1; mi >= 0; mi--) {
-            const m = this.mice[mi];
-            if (Math.hypot(m.sprite.x - fp.x, m.sprite.y - fp.y) < FROG_EAT_DIST) {
-              m.sprite.destroy();
-              this.mice.splice(mi, 1);
-              ate = true;
-              break;
+          if (!royale) {
+            for (let mi = this.mice.length - 1; mi >= 0; mi--) {
+              const m = this.mice[mi];
+              if (Math.hypot(m.sprite.x - fp.x, m.sprite.y - fp.y) < FROG_EAT_DIST) {
+                m.sprite.destroy();
+                this.mice.splice(mi, 1);
+                ate = true;
+                break;
+              }
             }
           }
           if (!ate) {
@@ -4265,14 +4742,13 @@ function initWorld() {
               const ro = this.roaches[ri];
               if (this.isRoachFeedingOnDeadShrimp(ro)) continue;
               if (Math.hypot(ro.sprite.x - fp.x, ro.sprite.y - fp.y) < FROG_EAT_DIST) {
-                ro.sprite.destroy();
-                this.roaches.splice(ri, 1);
+                this.removeRoachAt(ri, now);
                 ate = true;
                 break;
               }
             }
           }
-          if (!ate) {
+          if (!ate && !royale) {
             for (let li = this.lizards.length - 1; li >= 0; li--) {
               const lz = this.lizards[li];
               if (this.arboreal && this.arboreal.liz === lz && !this.arboreal.lizardFled) continue;
@@ -4307,6 +4783,39 @@ function initWorld() {
         const spr = sv.sprite;
         let sx = spr.x;
         let sy = spr.y;
+
+        if (royale) {
+          sv.fleeUntil = 0;
+          sv.beingChased = false;
+          sv.chasedBySnake = null;
+          sv.mode = "land";
+          sv.landUntil = now + ROACH_ROYALE_DURATION_MS;
+          spr.setTexture("sparrow");
+          spr.setDepth(16.8);
+          const chaseRo = this.findNearestRoachPrey(sx, sy);
+          if (chaseRo) {
+            sv.target.x = chaseRo.sprite.x;
+            sv.target.y = chaseRo.sprite.y;
+            const tx = chaseRo.sprite.x - sx;
+            const ty = chaseRo.sprite.y - sy;
+            const len = Math.hypot(tx, ty) || 1;
+            sx += (tx / len) * (SPARROW_LAND_SPEED + 10) * dt;
+            sy += (ty / len) * (SPARROW_LAND_SPEED + 10) * dt;
+            for (let ri = this.roaches.length - 1; ri >= 0; ri--) {
+              const ro = this.roaches[ri];
+              if (this.isRoachFeedingOnDeadShrimp(ro)) continue;
+              if (Math.hypot(ro.sprite.x - sx, ro.sprite.y - sy) < SPARROW_ROACH_EAT_DIST) {
+                this.removeRoachAt(ri, now);
+                break;
+              }
+            }
+          }
+          spr.setPosition(sx, sy);
+          spr.setFlipX((sv.target.x - sx) < 0);
+          this.clampSpriteToPlaza(spr);
+          continue;
+        }
+
         const fleeing = sv.fleeUntil > now;
         const flying = sv.mode === "fly" || fleeing;
 
@@ -4315,9 +4824,11 @@ function initWorld() {
           spr.setDepth(17.2);
           if (now > sv.retargetAt) {
             sv.retargetAt = now + 700 + Math.random() * 900;
-            if (!fleeing && this.roaches.length && Math.random() < 0.28) {
+            if (!fleeing && this.roaches.length && Math.random() < (royale ? 1 : 0.28)) {
               let bestRo = null;
-              let bestRd = SPARROW_ROACH_HUNT_RANGE;
+              let bestRd = royale
+                ? SPARROW_ROACH_HUNT_RANGE * ROACH_ROYALE_PREDATOR_AGRO_MULT
+                : SPARROW_ROACH_HUNT_RANGE;
               for (const ro of this.roaches) {
                 if (this.isRoachFeedingOnDeadShrimp(ro)) continue;
                 const d = Math.hypot(ro.sprite.x - sx, ro.sprite.y - sy);
@@ -4371,7 +4882,9 @@ function initWorld() {
 
         if (!flying) {
           let chaseRo = null;
-          let bestRd = SPARROW_ROACH_HUNT_RANGE;
+          let bestRd = royale
+            ? SPARROW_ROACH_HUNT_RANGE * ROACH_ROYALE_PREDATOR_AGRO_MULT
+            : SPARROW_ROACH_HUNT_RANGE;
           for (const ro of this.roaches) {
             if (this.isRoachFeedingOnDeadShrimp(ro)) continue;
             const d = Math.hypot(ro.sprite.x - sx, ro.sprite.y - sy);
@@ -4390,8 +4903,7 @@ function initWorld() {
               const ro = this.roaches[ri];
               if (this.isRoachFeedingOnDeadShrimp(ro)) continue;
               if (Math.hypot(ro.sprite.x - sx, ro.sprite.y - sy) < SPARROW_ROACH_EAT_DIST) {
-                ro.sprite.destroy();
-                this.roaches.splice(ri, 1);
+                this.removeRoachAt(ri, now);
                 sv.landUntil = now + 400;
                 break;
               }
@@ -4556,6 +5068,19 @@ function initWorld() {
       cam.setZoom(DEFAULT_PLAZA_ZOOM);
       cam.roundPixels = true;
       cam.centerOn(0, 0);
+      this._roachRoyaleCycleStartAt = this.time.now;
+      this._roachRoyaleBanner = this.add
+        .text(0, -hh + 52 * PS, "", {
+          fontFamily: '"ZCOOL KuaiLe", "Microsoft YaHei", sans-serif',
+          fontSize: `${Math.round(13 * PS)}px`,
+          color: "#fff6e8",
+          backgroundColor: "rgba(26, 22, 18, 0.78)",
+          padding: { x: 10, y: 6 },
+        })
+        .setOrigin(0.5, 0)
+        .setScrollFactor(0)
+        .setDepth(2000)
+        .setVisible(false);
 
       // Golden Hour tiles（略加噪点边）
       makeTexture(this, "tileA", 16, 16, (g) => {
@@ -4780,6 +5305,13 @@ function initWorld() {
         g.fillStyle(0xfff2d8, 1).fillRect(7, 2, 2, 1);
         g.fillStyle(0x1a0c0a, 1).fillRect(10, 0, 2, 2);
         g.fillRect(11, 5, 2, 2);
+      });
+      makeTexture(this, "roachRoyaleTrophy", 14, 16, (g) => {
+        g.fillStyle(0xf4a900, 1).fillRect(3, 0, 8, 3);
+        g.fillStyle(0xffd700, 1).fillRect(4, 3, 6, 8);
+        g.fillStyle(0xc1666b, 1).fillRect(2, 11, 10, 3);
+        g.fillStyle(0xffe066, 1).fillRect(1, 4, 2, 4);
+        g.fillRect(11, 4, 2, 4);
       });
       // 蛇身：浅色底 + setTint（黄 / 棕 / 绿）；侧向扭动由位移与旋转表现
       makeTexture(this, "snake", 26, 10, (g) => {
@@ -5199,11 +5731,13 @@ function initWorld() {
       this.frogs = [];
       const nFrogs = Math.min(4, this.plazaPools.length || 0);
       for (let fi = 0; fi < nFrogs; fi++) {
-        const pool = this.plazaPools[fi % this.plazaPools.length];
+        const poolIndex = fi % this.plazaPools.length;
+        const pool = this.plazaPools[poolIndex];
         const p0 = this.randomPointInsidePlazaPool(pool);
-        const fr = this.createFrogAt(p0.x, p0.y);
+        const fr = this.createFrogAt(p0.x, p0.y, poolIndex);
+        fr.pondHome = { x: p0.x, y: p0.y };
         fr.retargetAt = this.time.now + fi * 240;
-        this.pickFrogTarget(fr);
+        this.pickFrogTargetInPool(fr, poolIndex);
         this.frogs.push(fr);
       }
 
@@ -5907,6 +6441,73 @@ window.addEventListener("DOMContentLoaded", async () => {
   setTimeout(updateZoomLevel, 150);
   // 定期同步
   setInterval(updateZoomLevel, 280);
+
+  const roachRoyalePanel = document.getElementById("roachRoyalePanel");
+  const roachRoyaleBadge = document.getElementById("roachRoyaleBadge");
+  const roachRoyaleTimerLabel = document.getElementById("roachRoyaleTimerLabel");
+  const roachRoyaleTimerValue = document.getElementById("roachRoyaleTimerValue");
+  const roachRoyaleKills = document.getElementById("roachRoyaleKills");
+  const roachRoyaleRoaches = document.getElementById("roachRoyaleRoaches");
+  const roachRoyaleDuration = document.getElementById("roachRoyaleDuration");
+  const roachRoyaleCycle = document.getElementById("roachRoyaleCycle");
+  const roachRoyaleHint = document.getElementById("roachRoyaleHint");
+  const roachRoyaleChip = document.getElementById("roachRoyaleChip");
+
+  function updateRoachRoyaleHud() {
+    const scene = sceneRef;
+    if (!scene?.getRoachRoyaleUiState) {
+      if (roachRoyaleChip) roachRoyaleChip.classList.add("hidden");
+      return;
+    }
+    const ui = scene.getRoachRoyaleUiState();
+    const clock = formatRoyaleClock(ui.active ? ui.remainSec : ui.nextStartSec);
+
+    if (roachRoyalePanel) {
+      roachRoyalePanel.classList.toggle("is-active", ui.active);
+    }
+    if (roachRoyaleBadge) {
+      roachRoyaleBadge.textContent = ui.active ? "进行中" : "等待下一场";
+      roachRoyaleBadge.classList.toggle("is-active", ui.active);
+    }
+    if (roachRoyaleTimerLabel) {
+      roachRoyaleTimerLabel.textContent = ui.active ? "本场剩余" : "下一场开始";
+    }
+    if (roachRoyaleTimerValue) {
+      roachRoyaleTimerValue.textContent = clock;
+    }
+    if (roachRoyaleKills) {
+      roachRoyaleKills.textContent = ui.active ? `${ui.kills} / ${ui.winKills}` : "—";
+    }
+    if (roachRoyaleRoaches) {
+      roachRoyaleRoaches.textContent = ui.active
+        ? `${ui.roaches} / ${ui.maxRoaches}`
+        : String(ui.roaches);
+    }
+    if (roachRoyaleDuration) {
+      roachRoyaleDuration.textContent = `${ui.durationMin} 分钟`;
+    }
+    if (roachRoyaleCycle) {
+      roachRoyaleCycle.textContent = `${ui.cycleMin} 分钟`;
+    }
+    if (roachRoyaleHint) {
+      roachRoyaleHint.textContent = ui.active
+        ? ui.endedEarly
+          ? "本场已提前结束，计时器显示距离下一轮开始的倒计时。"
+          : "猎食者正在追蟑。累计 >100 只或蟑螂清零即胜。"
+        : "间歇期：广场恢复正常。倒计时归零时大逃杀自动开始。";
+    }
+    if (roachRoyaleChip) {
+      roachRoyaleChip.classList.remove("hidden");
+      roachRoyaleChip.classList.toggle("is-active", ui.active);
+      roachRoyaleChip.textContent = ui.active ? `🪳 进行中 ${clock}` : `🪳 下一场 ${clock}`;
+      roachRoyaleChip.title = ui.active
+        ? `蟑螂大逃杀进行中，剩余 ${clock}`
+        : `距离下一场大逃杀 ${clock}`;
+    }
+  }
+
+  setTimeout(updateRoachRoyaleHud, 200);
+  setInterval(updateRoachRoyaleHud, 500);
 
   await refresh();
 });
