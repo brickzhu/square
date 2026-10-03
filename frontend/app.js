@@ -970,8 +970,16 @@ function getSquarePixelRatio() {
 
 function formatRoyaleClock(totalSec) {
   const sec = Math.max(0, Math.floor(totalSec));
-  const m = Math.floor(sec / 60);
+  const days = Math.floor(sec / 86400);
+  const hours = Math.floor((sec % 86400) / 3600);
+  const m = Math.floor((sec % 3600) / 60);
   const s = sec % 60;
+  if (days > 0) {
+    return `${days}天 ${String(hours).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+  }
+  if (hours > 0) {
+    return `${hours}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+  }
   return `${m}:${String(s).padStart(2, "0")}`;
 }
 
@@ -1014,6 +1022,8 @@ function initWorld() {
   const PLAZA_ZONE_POOL_AREA_MULT = 1.5;
   const PLAZA_ZONE_POOL_LINEAR_SCALE = Math.sqrt(PLAZA_ZONE_POOL_AREA_MULT);
   const MAX_LIZARDS = 7;
+  /** 蜥蜴体色：绿 / 黄 / 白 / 橘（浅色底图 + setTint） */
+  const LIZARD_TINTS = [0x4caf50, 0xffd54f, 0xf5f5f5, 0xff922b];
   /** 地图上可同时存在的蜥蜴蛋上限（需 ≥ 每窝颗数） */
   const MAX_LIZARD_EGGS_WORLD = 20;
   /** 单次产卵颗数 */
@@ -1035,6 +1045,7 @@ function initWorld() {
   const FISH_SWIM_SPEED = 16;
   const FISH_MATURE_MS = 14_000;
   const CAT_FISH_INTERVAL_MS = 120_000;
+  const CAT_COUNT = 2;
   const POND_FISH_TINTS = [
     0xff6b6b, 0xffd93d, 0x6bcb77, 0x4d96ff, 0xc56cf0, 0xff922b, 0x95e1d3, 0xf38ba8, 0xe63946, 0x2a9d8f,
   ];
@@ -1088,9 +1099,10 @@ function initWorld() {
   const SPARROW_LAND_MIN_MS = 2200;
   const SNAKE_EAT_SPARROW_EGG_COOLDOWN_MS = 60_000;
   const SPARROW_EGG_EAT_DIST = 12;
-  /** 蟑螂大逃杀：每 24 分钟一轮，持续 12 分钟；猎食者累计 >100 只或蟑灭则胜 */
-  const ROACH_ROYALE_CYCLE_MS = 1_440_000;
-  const ROACH_ROYALE_DURATION_MS = 720_000;
+  /** 蟑螂大逃杀：刷新后先空等 10 天，再开场 5 分钟；猎食者累计 >100 只或蟑灭则胜 */
+  const ROACH_ROYALE_CYCLE_MS = 10 * 24 * 60 * 60 * 1000;
+  const ROACH_ROYALE_DURATION_MS = 300_000;
+  const ROACH_ROYALE_PERIOD_MS = ROACH_ROYALE_CYCLE_MS + ROACH_ROYALE_DURATION_MS;
   const ROACH_ROYALE_MAX_ROACHES = 150;
   const ROACH_ROYALE_BREED_BATCH = 5;
   const ROACH_ROYALE_WIN_KILLS = 100;
@@ -1102,6 +1114,54 @@ function initWorld() {
   const MAX_ROACHES_NORMAL = 96;
   const ROACH_LAST_STAND_BROOD_NORMAL = 10;
   const ROACH_BREED_BATCH_NORMAL = 3;
+  /** 狗：追猫 / 蛇 / 牛蛙；抓到不杀猎物；未抓到或抓到后休息 5 分钟；老鼠碰狗即消失且不躲狗 */
+  const DOG_REST_MS = 300_000;
+  const DOG_HUNT_TIMEOUT_MS = 90_000;
+  const DOG_CATCH_DIST = 15;
+  const DOG_MOUSE_EAT_DIST = 11;
+  const DOG_HUNT_SPEED = 40;
+  const DOG_REST_SPEED = 16;
+  const DOG_FLEE_RANGE = 78;
+  const DOG_FLEE_SPEED = 54;
+  /** 动物整体移速略提；转向用惯性插值，减少“瞬移拐弯”感 */
+  const ANIMAL_SPEED_MULT = 1.22;
+  const ANIMAL_STEER_ACCEL = 9.5;
+  /** 鸡：最多 7 只；吃蟑螂；生蛋；狗每 5 分钟追 1 次（不吃），被追满 5 次后死亡 */
+  const MAX_CHICKENS = 7;
+  const CHICKEN_SPEED = 24;
+  const CHICKEN_ROACH_HUNT_RANGE = 100;
+  const CHICKEN_ROACH_EAT_DIST = 10;
+  const CHICKEN_LAY_INTERVAL_MS = 50_000;
+  const CHICKEN_EGG_HATCH_MS = 22_000;
+  const DOG_CHICKEN_CHASE_INTERVAL_MS = 300_000;
+  const DOG_CHICKEN_CATCH_DIST = 16;
+  const CHICKEN_DOG_CHASEES_TO_DIE = 5;
+  const CHICKEN_FLEE_DOG_SPEED = 38;
+  const APPLE_DROP_MIN_MS = 5500;
+  const APPLE_DROP_JITTER_MS = 9000;
+  const APPLE_MAX_WORLD = 20;
+  const APPLE_FALL_GRAV = 420;
+  const APPLE_FALL_V0 = 8;
+  const APPLE_ANIMAL_SEEK_RANGE = 105;
+  const APPLE_EAT_DIST = 11;
+  const APPLE_FISH_SEEK_RANGE = 72;
+  const APPLE_FISH_EAT_DIST = 13;
+  /** 羊：2 只；一次只啃一块草坪、一次吃一格；吃掉后 5 分钟长回 */
+  const SHEEP_COUNT = 2;
+  const SHEEP_SPEED = 17;
+  const SHEEP_EAT_DIST = 9;
+  const SHEEP_EAT_COOLDOWN_MS = 480;
+  const SHEEP_GRASS_REGROW_MS = 300_000;
+  /** 黄鼠狼：2 只；吃鸡；吃鸡时狗追但不杀；进不了栏杆 */
+  const WEASEL_COUNT = 2;
+  const WEASEL_SPEED = 28;
+  const WEASEL_HUNT_RANGE = 130;
+  const WEASEL_EAT_DIST = 12;
+  const WEASEL_FLEE_DOG_SPEED = 42;
+  const WEASEL_FLEE_AFTER_DOG_MS = 5500;
+  const DOG_WEASEL_CATCH_DIST = 15;
+  const CHICKEN_FLEE_WEASEL_RANGE = 70;
+  const CHICKEN_FLEE_WEASEL_SPEED = 36;
 
   function makeTexture(scene, key, w, h, painter) {
     const g = scene.make.graphics({ x: 0, y: 0, add: false });
@@ -1237,6 +1297,9 @@ function initWorld() {
     constructor() {
       super("plaza");
       this.booths = [];
+      /** @type {{ sprite: Phaser.GameObjects.Image, chaseMouse: any, chaseSparrow: any, fishing: any, nextFishAt: number }[]} */
+      this.cats = [];
+      /** 兼容旧引用：始终指向第一只猫的 sprite */
       this.cat = null;
       /** @type {{ sprite: Phaser.GameObjects.Image, home: {x:number,y:number}, target: {x:number,y:number}, retargetAt: number }[]} */
       this.lizards = [];
@@ -1246,7 +1309,6 @@ function initWorld() {
       this.snakes = [];
       /** 牛蛙：活动在水池内/旁；捕食除猫、蛇外的动物 */
       this.frogs = [];
-      this.catChaseMouse = null;
       this.mouseBreedLock = 0;
       /** 老鼠随机游荡的轴对齐范围（与相机大地砖边界一致，留边避免贴边） */
       this.mouseRoam = null;
@@ -1279,9 +1341,6 @@ function initWorld() {
       /** 分区水池内的鱼（sprite 在水面下、flow 之上） */
       this.pondFish = [];
       this.pondFishEggs = [];
-      /** @type {{ phase: string, poolIndex: number, catchDoneAt?: number, exitX?: number, exitY?: number, leaveUntil?: number } | null} */
-      this.catFishing = null;
-      this._nextCatFishAt = 0;
       /** 井盖世界坐标（与 create 里 manhole 圆心一致），供鼠蟑传送与寻路 */
       this.manholes = [];
       /** 麻雀：飞行时可穿任意景物；落地捕蟑，遭猫/蛇追猎 */
@@ -1289,8 +1348,25 @@ function initWorld() {
       /** 麻雀蛋（须在树上；每窝仅一颗会孵化） */
       this.sparrowEggs = [];
       this._nextSparrowEggLayAt = 0;
-      /** 猫当前追的落地麻雀 sprite */
-      this.catChaseSparrow = null;
+      /** 鸡：吃蟑螂、生蛋；狗周期性驱赶 */
+      this.chickens = [];
+      this.chickenEggs = [];
+      this._nextChickenLayAt = 0;
+      /** 树上随机掉落的苹果（落地或落水后会被动物取食） */
+      this.fallenApples = [];
+      this._nextAppleDropAt = 0;
+      /** 草坪块：每块含若干格；可被羊吃掉并定时长回 */
+      this.lawnPatches = [];
+      /** 栏杆围起的禁区（AABB）；动物不可进入 */
+      this.fencePaddocks = [];
+      /** 羊：啃草 */
+      this.sheep = [];
+      /** 黄鼠狼：吃鸡；进不了栏杆 */
+      this.weasels = [];
+      /** 狗：追猫/蛇/牛蛙；休息时游荡 */
+      this.dog = null;
+      /** 点击狗后进入「点选猎物」模式，再点老鼠/蜥蜴/蟑螂即可吃掉 */
+      this.dogSelectArmed = false;
       /** 蟑螂大逃杀周期与战果 */
       this._roachRoyaleCycleStartAt = 0;
       this._roachRoyaleCycleIndex = -1;
@@ -1360,7 +1436,7 @@ function initWorld() {
     mouseSeeksManhole(m, catX, catY, now) {
       const mx = m.sprite.x;
       const my = m.sprite.y;
-      if (this.catChaseMouse === m.sprite) return true;
+      if (this.anyCatChasingMouse(m.sprite)) return true;
       if (Math.hypot(catX - mx, catY - my) < MOUSE_MANHOLE_PANIC_CAT) return true;
       for (const snk of this.snakes || []) {
         if (Math.hypot(snk.sprite.x - mx, snk.sprite.y - my) < MOUSE_MANHOLE_PANIC_SNAKE) return true;
@@ -1371,6 +1447,93 @@ function initWorld() {
         if (Math.hypot(fp.x - mx, fp.y - my) < MOUSE_MANHOLE_PANIC_FROG) return true;
       }
       return false;
+    }
+
+    createCatAt(x, y) {
+      const sprite = this.add
+        .image(x, y, "cat")
+        .setOrigin(0.5)
+        .setDepth(15)
+        .setScale(1.18);
+      return {
+        sprite,
+        chaseMouse: null,
+        chaseSparrow: null,
+        fishing: null,
+        nextFishAt: 0,
+        vx: 0,
+        vy: 0,
+      };
+    }
+
+    syncPrimaryCat() {
+      this.cat = this.cats.find((c) => c.sprite?.active)?.sprite || null;
+    }
+
+    activeCatEntries() {
+      return (this.cats || []).filter((c) => c.sprite?.active);
+    }
+
+    nearestCatEntry(x, y) {
+      let best = null;
+      let bestD = Infinity;
+      for (const c of this.activeCatEntries()) {
+        const d = Math.hypot(c.sprite.x - x, c.sprite.y - y);
+        if (d < bestD) {
+          bestD = d;
+          best = c;
+        }
+      }
+      return best;
+    }
+
+    anyCatChasingMouse(sprite) {
+      return this.activeCatEntries().some((c) => c.chaseMouse === sprite);
+    }
+
+    anyCatChasingSparrow(sprite) {
+      return this.activeCatEntries().some((c) => c.chaseSparrow === sprite);
+    }
+
+    clearCatChaseOfMouse(sprite) {
+      for (const c of this.cats || []) {
+        if (c.chaseMouse === sprite) c.chaseMouse = null;
+      }
+    }
+
+    clearCatChaseOfSparrow(sprite) {
+      for (const c of this.cats || []) {
+        if (c.chaseSparrow === sprite) c.chaseSparrow = null;
+      }
+    }
+
+    clearAllCatChases() {
+      for (const c of this.cats || []) {
+        c.chaseMouse = null;
+        c.chaseSparrow = null;
+      }
+    }
+
+    /**
+     * 朝目标方向平滑加速（惯性转向），返回本帧位移与当前速度。
+     * @param {{ vx?: number, vy?: number }} body
+     */
+    smoothSteer(body, dirX, dirY, speed, dt, accel = ANIMAL_STEER_ACCEL) {
+      const len = Math.hypot(dirX, dirY);
+      const tvx = len > 0.001 ? (dirX / len) * speed : 0;
+      const tvy = len > 0.001 ? (dirY / len) * speed : 0;
+      if (body.vx == null || Number.isNaN(body.vx)) body.vx = tvx;
+      if (body.vy == null || Number.isNaN(body.vy)) body.vy = tvy;
+      const k = 1 - Math.exp(-accel * dt);
+      body.vx += (tvx - body.vx) * k;
+      body.vy += (tvy - body.vy) * k;
+      return { dx: body.vx * dt, dy: body.vy * dt, vx: body.vx, vy: body.vy };
+    }
+
+    applyAnimalFlip(sprite, body, fallbackLeft) {
+      if (!sprite) return;
+      if (body && Math.abs(body.vx) > 1.2) sprite.setFlipX(body.vx < 0);
+      else if (fallbackLeft != null) sprite.setFlipX(!!fallbackLeft);
     }
 
     findNearestRoachPrey(x, y, maxDist = Infinity) {
@@ -1385,6 +1548,118 @@ function initWorld() {
         }
       }
       return best;
+    }
+
+    plazaPoolIndexAt(x, y) {
+      if (!this.plazaPools?.length) return -1;
+      for (let i = 0; i < this.plazaPools.length; i++) {
+        if (this.pointInPlazaPool(this.plazaPools[i], x, y)) return i;
+      }
+      return -1;
+    }
+
+    findNearestLandApple(x, y, maxDist = Infinity) {
+      let bestI = -1;
+      let bestD = maxDist;
+      for (let i = 0; i < (this.fallenApples || []).length; i++) {
+        const ap = this.fallenApples[i];
+        if (!ap.landed || ap.inWater || !ap.sprite?.active) continue;
+        const d = Math.hypot(ap.sprite.x - x, ap.sprite.y - y);
+        if (d < bestD) {
+          bestD = d;
+          bestI = i;
+        }
+      }
+      if (bestI < 0) return null;
+      return { ap: this.fallenApples[bestI], index: bestI, dist: bestD };
+    }
+
+    removeFallenAppleAt(index) {
+      const ap = this.fallenApples[index];
+      ap?.sprite?.destroy();
+      this.fallenApples.splice(index, 1);
+    }
+
+    tryEatLandApple(x, y, eatDist) {
+      const list = this.fallenApples || [];
+      for (let i = list.length - 1; i >= 0; i--) {
+        const ap = list[i];
+        if (!ap.landed || ap.inWater || !ap.sprite?.active) continue;
+        if (Math.hypot(ap.sprite.x - x, ap.sprite.y - y) < eatDist) {
+          this.removeFallenAppleAt(i);
+          return true;
+        }
+      }
+      return false;
+    }
+
+    createFallenAppleDrop(x, y, groundY) {
+      const sprite = this.add
+        .image(x, y, "apple")
+        .setOrigin(0.5, 0.55)
+        .setDepth(16.55)
+        .setScale(0.58);
+      const ap = {
+        sprite,
+        startY: y,
+        vy: APPLE_FALL_V0 + Math.random() * 18,
+        vx: (Math.random() - 0.5) * 22,
+        landed: false,
+        inWater: false,
+        poolIndex: -1,
+        groundY,
+      };
+      this.fallenApples.push(ap);
+      return ap;
+    }
+
+    spawnRandomAppleFromTree() {
+      if (!this.treeSpots?.length) return;
+      if (this.fallenApples.length >= APPLE_MAX_WORLD) return;
+      const tree = this.treeSpots[Math.floor(Math.random() * this.treeSpots.length)];
+      const canopyY = this.sparrowTreePerchY(tree) - 4;
+      const ax = tree.x + (Math.random() - 0.5) * 16;
+      this.createFallenAppleDrop(ax, canopyY, tree.y - 2);
+    }
+
+    updateFallenApples(now, dt) {
+      if (!this.fallenApples) this.fallenApples = [];
+      if (this.treeSpots?.length && now >= this._nextAppleDropAt) {
+        this._nextAppleDropAt = now + APPLE_DROP_MIN_MS + Math.random() * APPLE_DROP_JITTER_MS;
+        if (Math.random() < 0.9) this.spawnRandomAppleFromTree();
+      }
+
+      for (let i = this.fallenApples.length - 1; i >= 0; i--) {
+        const ap = this.fallenApples[i];
+        const sp = ap.sprite;
+        if (!sp?.active) {
+          this.fallenApples.splice(i, 1);
+          continue;
+        }
+        if (ap.landed) continue;
+
+        ap.vy += APPLE_FALL_GRAV * dt;
+        let nx = sp.x + ap.vx * dt;
+        let ny = sp.y + ap.vy * dt;
+        const pi = this.plazaPoolIndexAt(nx, ny);
+        if (pi >= 0) {
+          ap.inWater = true;
+          ap.poolIndex = pi;
+          ap.landed = true;
+          ap.vy = 0;
+          ap.vx = 0;
+          sp.setPosition(nx, ny);
+          sp.setDepth(15.2);
+        } else if (ny >= ap.groundY || ny - ap.startY > 130) {
+          ap.landed = true;
+          ap.vy = 0;
+          ap.vx = 0;
+          const c = this.clampPosToPlaza(nx, ny, sp);
+          sp.setPosition(c.x, c.y);
+        } else {
+          sp.setPosition(nx, ny);
+        }
+      }
     }
 
     roachSeeksManhole(ro, now) {
@@ -1462,8 +1737,7 @@ function initWorld() {
         sv.beingChased = false;
         sv.chasedBySnake = null;
       }
-      this.catChaseMouse = null;
-      this.catChaseSparrow = null;
+      this.clearAllCatChases();
       const cap = ROACH_ROYALE_MAX_ROACHES;
       const burst = Math.min(24, cap - this.roaches.length);
       for (let k = 0; k < burst; k++) {
@@ -1499,15 +1773,16 @@ function initWorld() {
 
     updateRoachRoyale(now) {
       if (!this._roachRoyaleCycleStartAt) this._roachRoyaleCycleStartAt = now;
-      const cycleIndex = Math.floor((now - this._roachRoyaleCycleStartAt) / ROACH_ROYALE_CYCLE_MS);
-      const cyclePos = (now - this._roachRoyaleCycleStartAt) % ROACH_ROYALE_CYCLE_MS;
+      const cycleIndex = Math.floor((now - this._roachRoyaleCycleStartAt) / ROACH_ROYALE_PERIOD_MS);
+      const cyclePos = (now - this._roachRoyaleCycleStartAt) % ROACH_ROYALE_PERIOD_MS;
       if (cycleIndex !== this._roachRoyaleCycleIndex) {
         this._roachRoyaleCycleIndex = cycleIndex;
         this._roachRoyaleEndedEarly = false;
         this._roachRoyaleKills = 0;
       }
-      const shouldBeActive =
-        !this._roachRoyaleEndedEarly && cyclePos < ROACH_ROYALE_DURATION_MS;
+      // 每轮前半段为空等（10 天），后半段才是场次（5 分钟）——刷新后不会立刻开打
+      const inWindow = cyclePos >= ROACH_ROYALE_CYCLE_MS;
+      const shouldBeActive = !this._roachRoyaleEndedEarly && inWindow;
       const wasActive = this._roachRoyaleActive;
       if (shouldBeActive && !wasActive) this.startRoachRoyale(now);
       else if (!shouldBeActive && wasActive) this.endRoachRoyale(now, false);
@@ -1520,8 +1795,7 @@ function initWorld() {
 
     /** 大逃杀进行中：猎食者只追蟑，打断爬树/爬蛋/追雀等其它行为 */
     enforceRoachRoyalePredatorFocus() {
-      this.catChaseMouse = null;
-      this.catChaseSparrow = null;
+      this.clearAllCatChases();
       if (this.arboreal?.liz?.sprite?.active) {
         const a = this.arboreal;
         const lp = this.clampPosToPlaza(a.baseX, a.baseY + 2, a.liz.sprite);
@@ -1556,13 +1830,16 @@ function initWorld() {
 
     getRoachRoyaleUiState(now = this.time?.now ?? 0) {
       const cycleStart = this._roachRoyaleCycleStartAt || now;
-      const cyclePos = (now - cycleStart) % ROACH_ROYALE_CYCLE_MS;
+      const cyclePos = (now - cycleStart) % ROACH_ROYALE_PERIOD_MS;
       const active = !!this._roachRoyaleActive;
       let remainMs;
       if (active) {
-        remainMs = ROACH_ROYALE_DURATION_MS - cyclePos;
-      } else {
+        remainMs = ROACH_ROYALE_PERIOD_MS - cyclePos;
+      } else if (cyclePos < ROACH_ROYALE_CYCLE_MS) {
         remainMs = ROACH_ROYALE_CYCLE_MS - cyclePos;
+      } else {
+        // 本场已提前结束，等到下一轮空等结束再开
+        remainMs = ROACH_ROYALE_PERIOD_MS - cyclePos + ROACH_ROYALE_CYCLE_MS;
       }
       const remainSec = Math.max(0, Math.ceil(remainMs / 1000));
       return {
@@ -1573,7 +1850,7 @@ function initWorld() {
         roaches: this.roaches?.length || 0,
         maxRoaches: ROACH_ROYALE_MAX_ROACHES,
         winKills: ROACH_ROYALE_WIN_KILLS + 1,
-        cycleMin: ROACH_ROYALE_CYCLE_MS / 60_000,
+        cycleDays: ROACH_ROYALE_CYCLE_MS / 86_400_000,
         durationMin: ROACH_ROYALE_DURATION_MS / 60_000,
         endedEarly: !!this._roachRoyaleEndedEarly,
       };
@@ -1687,7 +1964,7 @@ function initWorld() {
       m.home.y = c.y;
       m.nextManholeAt = now + MANHOLE_COOLDOWN_MS;
       this.pickMouseTarget(m);
-      if (this.catChaseMouse === m.sprite) this.catChaseMouse = null;
+      this.clearCatChaseOfMouse(m.sprite);
       return true;
     }
 
@@ -2420,21 +2697,51 @@ function initWorld() {
         }
         const pool = this.plazaPools[f.poolIndex];
         if (!pool) continue;
-        if (now > f.retargetAt) {
-          f.retargetAt = now + 900 + Math.random() * 1400;
-          const p = this.randomPointInsidePlazaPool(pool);
-          f.target.x = p.x;
-          f.target.y = p.y;
-        }
         let x = f.sprite.x;
         let y = f.sprite.y;
-        const tx = f.target.x - x;
-        const ty = f.target.y - y;
-        const len = Math.hypot(tx, ty) || 1;
-        x += (tx / len) * FISH_SWIM_SPEED * dt;
-        y += (ty / len) * FISH_SWIM_SPEED * dt;
+        let seekAppleI = -1;
+        let seekAppleD = APPLE_FISH_SEEK_RANGE;
+        let seekAx = null;
+        let seekAy = null;
+        for (let ai = 0; ai < (this.fallenApples || []).length; ai++) {
+          const ap = this.fallenApples[ai];
+          if (!ap.landed || !ap.inWater || ap.poolIndex !== f.poolIndex || !ap.sprite?.active) continue;
+          const d = Math.hypot(ap.sprite.x - x, ap.sprite.y - y);
+          if (d < seekAppleD) {
+            seekAppleD = d;
+            seekAx = ap.sprite.x;
+            seekAy = ap.sprite.y;
+            seekAppleI = ai;
+          }
+        }
+        let flipLeft = false;
+        if (seekAx != null) {
+          if (seekAppleD < APPLE_FISH_EAT_DIST) {
+            this.removeFallenAppleAt(seekAppleI);
+          } else {
+            const tx = seekAx - x;
+            const ty = seekAy - y;
+            const len = Math.hypot(tx, ty) || 1;
+            x += (tx / len) * (FISH_SWIM_SPEED * 1.28) * dt;
+            y += (ty / len) * (FISH_SWIM_SPEED * 1.28) * dt;
+            flipLeft = tx < 0;
+          }
+        } else {
+          if (now > f.retargetAt) {
+            f.retargetAt = now + 900 + Math.random() * 1400;
+            const p = this.randomPointInsidePlazaPool(pool);
+            f.target.x = p.x;
+            f.target.y = p.y;
+          }
+          const tx = f.target.x - x;
+          const ty = f.target.y - y;
+          const len = Math.hypot(tx, ty) || 1;
+          x += (tx / len) * FISH_SWIM_SPEED * dt;
+          y += (ty / len) * FISH_SWIM_SPEED * dt;
+          flipLeft = tx < 0;
+        }
         f.sprite.setPosition(x, y);
-        f.sprite.setFlipX(tx < 0);
+        f.sprite.setFlipX(flipLeft);
         if (!this.pointInPlazaPool(pool, f.sprite.x, f.sprite.y)) {
           const p = this.randomPointInsidePlazaPool(pool);
           f.sprite.setPosition(p.x, p.y);
@@ -2465,18 +2772,19 @@ function initWorld() {
       this.tryPondFishBreed(now);
     }
 
-    updateCatFishing(cat, now, dt) {
-      const cf = this.catFishing;
+    updateCatFishing(catEntry, now, dt) {
+      const cat = catEntry.sprite;
+      const cf = catEntry.fishing;
       if (!cf) return;
       if (this.arboreal) {
-        this.catFishing = null;
-        this._nextCatFishAt = now + CAT_FISH_INTERVAL_MS;
+        catEntry.fishing = null;
+        catEntry.nextFishAt = now + CAT_FISH_INTERVAL_MS;
         return;
       }
       const pool = this.plazaPools[cf.poolIndex];
       if (!pool) {
-        this.catFishing = null;
-        this._nextCatFishAt = now + CAT_FISH_INTERVAL_MS;
+        catEntry.fishing = null;
+        catEntry.nextFishAt = now + CAT_FISH_INTERVAL_MS;
         return;
       }
       const center = this.poolCenter(pool);
@@ -2486,8 +2794,8 @@ function initWorld() {
       if (cf.phase === "approach") {
         const b = this.nearestPointOnPlazaPoolBoundary(pool, cat.x, cat.y);
         if (!b) {
-          this.catFishing = null;
-          this._nextCatFishAt = now + CAT_FISH_INTERVAL_MS;
+          catEntry.fishing = null;
+          catEntry.nextFishAt = now + CAT_FISH_INTERVAL_MS;
           return;
         }
         const vx = cat.x - center.x;
@@ -2507,7 +2815,7 @@ function initWorld() {
           cat.y += (dy / d) * step;
         }
         this.clampSpriteToPlaza(cat);
-        if (this.bounceIfNearFountain(cat, now)) this.catChaseMouse = null;
+        if (this.bounceIfNearFountain(cat, now)) catEntry.chaseMouse = null;
         this.clampSpriteToPlaza(cat);
         this.aimCatAt(cat, center.x, center.y);
       } else if (cf.phase === "catch") {
@@ -2541,14 +2849,14 @@ function initWorld() {
         const dy = (cf.exitY ?? cat.y) - cat.y;
         const d = Math.hypot(dx, dy) || 1;
         if (d < 20 || now >= (cf.leaveUntil || 0)) {
-          this.catFishing = null;
-          this._nextCatFishAt = now + CAT_FISH_INTERVAL_MS;
+          catEntry.fishing = null;
+          catEntry.nextFishAt = now + CAT_FISH_INTERVAL_MS;
         } else {
           const step = Math.min(26 * dt, d);
           cat.x += (dx / d) * step;
           cat.y += (dy / d) * step;
           this.clampSpriteToPlaza(cat);
-          if (this.bounceIfNearFountain(cat, now)) this.catChaseMouse = null;
+          if (this.bounceIfNearFountain(cat, now)) catEntry.chaseMouse = null;
           this.clampSpriteToPlaza(cat);
         }
         this.aimCatAt(cat, cf.exitX ?? cat.x, cf.exitY ?? cat.y);
@@ -2558,8 +2866,10 @@ function initWorld() {
     initPondFish() {
       this.pondFish = [];
       this.pondFishEggs = [];
-      this.catFishing = null;
-      this._nextCatFishAt = this.time.now + CAT_FISH_INTERVAL_MS;
+      for (const c of this.cats || []) {
+        c.fishing = null;
+        c.nextFishAt = this.time.now + CAT_FISH_INTERVAL_MS;
+      }
       for (let pi = 0; pi < this.plazaPools.length; pi++) {
         for (let k = 0; k < POND_FISH_START; k++) {
           this.spawnPondFish(pi, false);
@@ -2641,13 +2951,71 @@ function initWorld() {
       return { x: px, y: py };
     }
 
+    pointInFencePaddock(x, y) {
+      for (const r of this.fencePaddocks || []) {
+        if (x >= r.minX && x <= r.maxX && y >= r.minY && y <= r.maxY) return true;
+      }
+      return false;
+    }
+
+    getFencePaddockAt(x, y) {
+      for (const r of this.fencePaddocks || []) {
+        if (x >= r.minX && x <= r.maxX && y >= r.minY && y <= r.maxY) return r;
+      }
+      return null;
+    }
+
+    clampInsideFencePaddock(x, y, pad = 4) {
+      const r = this.fencePaddocks?.[0];
+      if (!r) return { x, y };
+      return {
+        x: Math.max(r.minX + pad, Math.min(r.maxX - pad, x)),
+        y: Math.max(r.minY + pad, Math.min(r.maxY - pad, y)),
+      };
+    }
+
+    randomPointInsideFencePaddock() {
+      const r = this.fencePaddocks?.[0];
+      if (!r) return null;
+      const pad = 10;
+      const w = r.maxX - r.minX - pad * 2;
+      const h = r.maxY - r.minY - pad * 2;
+      if (w <= 4 || h <= 4) {
+        return { x: (r.minX + r.maxX) / 2, y: (r.minY + r.maxY) / 2 };
+      }
+      return {
+        x: r.minX + pad + Math.random() * w,
+        y: r.minY + pad + Math.random() * h,
+      };
+    }
+
+    pushOutOfFencePaddocks(x, y, pad = 4) {
+      let px = x;
+      let py = y;
+      for (const r of this.fencePaddocks || []) {
+        if (px < r.minX || px > r.maxX || py < r.minY || py > r.maxY) continue;
+        const dLeft = px - r.minX;
+        const dRight = r.maxX - px;
+        const dTop = py - r.minY;
+        const dBot = r.maxY - py;
+        const m = Math.min(dLeft, dRight, dTop, dBot);
+        if (m === dLeft) px = r.minX - pad;
+        else if (m === dRight) px = r.maxX + pad;
+        else if (m === dTop) py = r.minY - pad;
+        else py = r.maxY + pad;
+      }
+      return { x: px, y: py };
+    }
+
     randomPlazaWalkPointAvoidingPools() {
       const p = this.plazaWalkBounds;
       if (!p) return null;
       for (let attempt = 0; attempt < 48; attempt++) {
         const tx = p.minX + Math.random() * (p.maxX - p.minX);
         const ty = p.minY + Math.random() * (p.maxY - p.minY);
-        if (!this.pointInAnyPlazaPool(tx, ty)) return { x: tx, y: ty };
+        if (this.pointInAnyPlazaPool(tx, ty)) continue;
+        if (this.pointInFencePaddock(tx, ty)) continue;
+        return { x: tx, y: ty };
       }
       return {
         x: p.minX + Math.random() * (p.maxX - p.minX),
@@ -2929,6 +3297,19 @@ function initWorld() {
         px = q.x;
         py = q.y;
       }
+      if (this.fencePaddocks?.length) {
+        if (sprite?._dragging) {
+          // 拖拽时允许进出栏杆
+        } else if (sprite?._fencePenned) {
+          const f = this.clampInsideFencePaddock(px, py, 5 * (this.plazaScale || 1));
+          px = f.x;
+          py = f.y;
+        } else {
+          const f = this.pushOutOfFencePaddocks(px, py, 5 * (this.plazaScale || 1));
+          px = f.x;
+          py = f.y;
+        }
+      }
       return { x: px, y: py };
     }
 
@@ -3145,6 +3526,8 @@ function initWorld() {
         retargetAt: 0,
         nextEatAt: 0,
         returningHome: false,
+        vx: 0,
+        vy: 0,
       };
     }
 
@@ -3316,14 +3699,27 @@ function initWorld() {
     spawnHatchLizardNear(x, y) {
       if (this.lizards.length >= MAX_LIZARDS) return;
       const c = this.clampPosToPlaza(x + (Math.random() - 0.5) * 14, y + (Math.random() - 0.5) * 14);
-      const lz = {
-        sprite: this.add.image(c.x, c.y, "lizard").setOrigin(0.5).setDepth(16),
-        home: { x: c.x, y: c.y },
-        target: { x: c.x, y: c.y },
-        retargetAt: this.time.now + 500 + Math.random() * 400,
-      };
+      const lz = this.createLizardAt(c.x, c.y);
+      lz.retargetAt = this.time.now + 500 + Math.random() * 400;
       this.pickLizardTarget(lz);
       this.lizards.push(lz);
+    }
+
+    createLizardAt(x, y, tint) {
+      const color =
+        tint ?? LIZARD_TINTS[Math.floor(Math.random() * LIZARD_TINTS.length)];
+      const sprite = this.add.image(x, y, "lizard").setOrigin(0.5).setDepth(16);
+      sprite.setTint(color);
+      this.wireDogCommandTarget(sprite, "lizard");
+      return {
+        sprite,
+        tint: color,
+        home: { x, y },
+        target: { x, y },
+        retargetAt: 0,
+        vx: 0,
+        vy: 0,
+      };
     }
 
     pickMouseTarget(mouse) {
@@ -3376,6 +3772,7 @@ function initWorld() {
         .setOrigin(0.5)
         .setDepth(16)
         .setScale(0.82);
+      this.wireDogCommandTarget(sprite, "mouse");
       return {
         sprite,
         home: { x, y },
@@ -3384,6 +3781,8 @@ function initWorld() {
         nextRoachEatAt: 0,
         nextEggEatAt: 0,
         nextManholeAt: 0,
+        vx: 0,
+        vy: 0,
       };
     }
 
@@ -3457,12 +3856,15 @@ function initWorld() {
         .setOrigin(0.5)
         .setDepth(15)
         .setScale(0.25);
+      this.wireDogCommandTarget(sprite, "roach");
       return {
         sprite,
         home: { x, y },
         target: { x, y },
         retargetAt: 0,
         nextManholeAt: 0,
+        vx: 0,
+        vy: 0,
       };
     }
 
@@ -3516,7 +3918,1059 @@ function initWorld() {
         /** @type {{ egg: object, tree: object, phase: string } | null} */
         treeEggClimb: null,
         chasingSparrow: null,
+        vx: 0,
+        vy: 0,
       };
+    }
+
+    isDogHunting(now = this.time.now) {
+      const dog = this.dog;
+      if (!dog?.sprite?.active) return false;
+      return now >= (dog.restUntil || 0);
+    }
+
+    pickDogTarget(dog) {
+      const p = this.plazaWalkBounds;
+      if (p) {
+        const pt = this.randomPlazaWalkPointAvoidingPools();
+        if (pt) {
+          dog.target.x = pt.x;
+          dog.target.y = pt.y;
+        } else {
+          dog.target.x = p.minX + Math.random() * (p.maxX - p.minX);
+          dog.target.y = p.minY + Math.random() * (p.maxY - p.minY);
+        }
+        return;
+      }
+      const r = this.mouseRoam;
+      if (r) {
+        dog.target.x = r.minX + Math.random() * (r.maxX - r.minX);
+        dog.target.y = r.minY + Math.random() * (r.maxY - r.minY);
+      }
+    }
+
+    createDogAt(x, y) {
+      const sprite = this.add
+        .image(x, y, "dog")
+        .setOrigin(0.5)
+        .setDepth(15.2)
+        .setScale(1.2);
+      sprite.setInteractive({ useHandCursor: true });
+      sprite.on("pointerdown", (pointer) => {
+        if (pointer?.event?.stopPropagation) pointer.event.stopPropagation();
+        this.setDogSelectArmed(!this.dogSelectArmed);
+      });
+      return {
+        sprite,
+        home: { x, y },
+        target: { x, y },
+        retargetAt: 0,
+        restUntil: 0,
+        huntStartedAt: 0,
+        chaseKind: null,
+        chaseSnake: null,
+        chaseFrog: null,
+        chaseChicken: null,
+        chaseWeasel: null,
+        nextChickenChaseAt: 0,
+        /** @type {{ kind: string, sprite: Phaser.GameObjects.Image } | null} */
+        commandPrey: null,
+        vx: 0,
+        vy: 0,
+      };
+    }
+
+    setDogSelectArmed(on) {
+      this.dogSelectArmed = !!on;
+      const sp = this.dog?.sprite;
+      if (sp?.active) {
+        if (this.dogSelectArmed) sp.setTint(0xffd27a);
+        else sp.clearTint();
+      }
+    }
+
+    wireDogCommandTarget(sprite, kind) {
+      if (!sprite) return;
+      const pad = kind === "roach" ? 18 : 10;
+      const w = Math.max(28, (sprite.width || 16) + pad * 2);
+      const h = Math.max(28, (sprite.height || 12) + pad * 2);
+      sprite.setInteractive({
+        hitArea: new Phaser.Geom.Rectangle(-w / 2, -h / 2, w, h),
+        hitAreaCallback: Phaser.Geom.Rectangle.Contains,
+        useHandCursor: true,
+      });
+      sprite.on("pointerdown", (pointer) => {
+        if (pointer?.event?.stopPropagation) pointer.event.stopPropagation();
+        if (!this.dogSelectArmed) return;
+        this.dogAssignCommandPrey(kind, sprite);
+      });
+    }
+
+    dogAssignCommandPrey(kind, sprite) {
+      const dog = this.dog;
+      if (!dog?.sprite?.active || !sprite?.active) return;
+      if (!["mouse", "lizard", "roach"].includes(kind)) return;
+      dog.commandPrey = { kind, sprite };
+      dog.restUntil = 0;
+      dog.huntStartedAt = 0;
+      this.setDogSelectArmed(false);
+    }
+
+    dogConsumePrey(kind, sprite, now) {
+      if (!sprite?.active) return false;
+      if (kind === "mouse") {
+        const idx = this.mice.findIndex((mm) => mm.sprite === sprite);
+        if (idx < 0) return false;
+        if (this.anyCatChasingMouse(sprite)) this.clearCatChaseOfMouse(sprite);
+        sprite.destroy();
+        this.mice.splice(idx, 1);
+        return true;
+      }
+      if (kind === "lizard") {
+        const idx = this.lizards.findIndex((lz) => lz.sprite === sprite);
+        if (idx < 0) return false;
+        const lz = this.lizards[idx];
+        if (this.arboreal && this.arboreal.liz === lz) this.arboreal = null;
+        sprite.destroy();
+        this.lizards.splice(idx, 1);
+        return true;
+      }
+      if (kind === "roach") {
+        const idx = this.roaches.findIndex((ro) => ro.sprite === sprite);
+        if (idx < 0) return false;
+        return this.removeRoachAt(idx, now);
+      }
+      return false;
+    }
+
+    resolveDogCommandPrey(dog) {
+      const cmd = dog.commandPrey;
+      if (!cmd?.sprite?.active) {
+        dog.commandPrey = null;
+        return null;
+      }
+      const { kind, sprite } = cmd;
+      let alive = false;
+      if (kind === "mouse") alive = this.mice.some((m) => m.sprite === sprite);
+      else if (kind === "lizard") alive = this.lizards.some((lz) => lz.sprite === sprite);
+      else if (kind === "roach") alive = this.roaches.some((ro) => ro.sprite === sprite);
+      if (!alive) {
+        dog.commandPrey = null;
+        return null;
+      }
+      return {
+        kind,
+        sprite,
+        x: sprite.x,
+        y: sprite.y,
+        d: Math.hypot(sprite.x - dog.sprite.x, sprite.y - dog.sprite.y),
+      };
+    }
+
+    /** 狗当前追猎目标：猫 / 蛇 / 牛蛙中最近者（猎物被抓后不消失） */
+    resolveDogPrey(dog) {
+      const sp = dog.sprite;
+      let bestD = Infinity;
+      let best = null;
+      const consider = (kind, x, y, extra = {}) => {
+        const d = Math.hypot(x - sp.x, y - sp.y);
+        if (d < bestD) {
+          bestD = d;
+          best = { kind, x, y, d, ...extra };
+        }
+      };
+      for (const ce of this.activeCatEntries()) {
+        consider("cat", ce.sprite.x, ce.sprite.y);
+      }
+      for (const snk of this.snakes || []) {
+        if (!snk.sprite?.active) continue;
+        if (snk.treeEggClimb) continue;
+        consider("snake", snk.sprite.x, snk.sprite.y, { snake: snk });
+      }
+      for (const fr of this.frogs || []) {
+        if (!fr.sprite?.active) continue;
+        if (fr.returningHome) continue;
+        consider("frog", fr.sprite.x, fr.sprite.y, { frog: fr });
+      }
+      return best;
+    }
+
+    applyFleeFromDog(x, y, now, dt) {
+      if (!this.isDogHunting(now)) return { x, y, fled: false };
+      const dog = this.dog?.sprite;
+      if (!dog?.active) return { x, y, fled: false };
+      const dx = x - dog.x;
+      const dy = y - dog.y;
+      const d = Math.hypot(dx, dy) || 1;
+      if (d >= DOG_FLEE_RANGE) return { x, y, fled: false };
+      const push = DOG_FLEE_SPEED * dt;
+      return { x: x + (dx / d) * push, y: y + (dy / d) * push, fled: true };
+    }
+
+    beginDogRest(dog, now) {
+      dog.restUntil = now + DOG_REST_MS;
+      dog.huntStartedAt = 0;
+      dog.chaseKind = null;
+      dog.chaseSnake = null;
+      dog.chaseFrog = null;
+      dog.chaseWeasel = null;
+      // 不清除 chaseChicken：追鸡周期单独用 nextChickenChaseAt
+    }
+
+    pickChickenTarget(ch) {
+      if (ch.penned) {
+        const pt = this.randomPointInsideFencePaddock();
+        if (pt) {
+          ch.target.x = pt.x;
+          ch.target.y = pt.y;
+          return;
+        }
+      }
+      const p = this.plazaWalkBounds;
+      if (p) {
+        const pt = this.randomPlazaWalkPointAvoidingPools();
+        if (pt) {
+          ch.target.x = pt.x;
+          ch.target.y = pt.y;
+        } else {
+          ch.target.x = p.minX + Math.random() * (p.maxX - p.minX);
+          ch.target.y = p.minY + Math.random() * (p.maxY - p.minY);
+        }
+        return;
+      }
+      ch.target.x = ch.home.x + (Math.random() - 0.5) * 120;
+      ch.target.y = ch.home.y + (Math.random() - 0.5) * 100;
+    }
+
+    createChickenAt(x, y) {
+      const sprite = this.add
+        .image(x, y, "chicken")
+        .setOrigin(0.5, 0.55)
+        .setDepth(15.4)
+        .setScale(0.95);
+      const ch = {
+        sprite,
+        home: { x, y },
+        target: { x, y },
+        retargetAt: 0,
+        dogChaseCount: 0,
+        penned: false,
+        dragging: false,
+        vx: 0,
+        vy: 0,
+      };
+      this.wireFenceDraggableAnimal(ch);
+      return ch;
+    }
+
+    createChickenEggAt(x, y, now) {
+      const sprite = this.add
+        .image(x, y, "chickenEgg")
+        .setOrigin(0.5, 0.55)
+        .setDepth(14.2)
+        .setScale(0.7);
+      return {
+        sprite,
+        hatchAt: now + CHICKEN_EGG_HATCH_MS,
+      };
+    }
+
+    killChicken(ch, now) {
+      if (!ch) return;
+      const idx = this.chickens.indexOf(ch);
+      if (idx < 0) return;
+      if (this.dog?.chaseChicken === ch) this.dog.chaseChicken = null;
+      ch.sprite?.destroy();
+      this.chickens.splice(idx, 1);
+    }
+
+    pickSheepWanderTarget(sh) {
+      if (sh.penned) {
+        const pt = this.randomPointInsideFencePaddock();
+        if (pt) {
+          sh.target.x = pt.x;
+          sh.target.y = pt.y;
+          return;
+        }
+      }
+      const pt = this.randomPlazaWalkPointAvoidingPools();
+      if (pt) {
+        sh.target.x = pt.x;
+        sh.target.y = pt.y;
+        return;
+      }
+      sh.target.x = sh.home.x + (Math.random() - 0.5) * 140;
+      sh.target.y = sh.home.y + (Math.random() - 0.5) * 110;
+    }
+
+    createSheepAt(x, y) {
+      const sprite = this.add
+        .image(x, y, "sheep")
+        .setOrigin(0.5, 0.55)
+        .setDepth(15.35)
+        .setScale(1.45);
+      const sh = {
+        sprite,
+        home: { x, y },
+        target: { x, y },
+        retargetAt: 0,
+        /** @type {number|null} */
+        lawnIndex: null,
+        nextEatAt: 0,
+        penned: false,
+        dragging: false,
+        vx: 0,
+        vy: 0,
+      };
+      this.wireFenceDraggableAnimal(sh);
+      return sh;
+    }
+
+    wireFenceDraggableAnimal(body) {
+      const sprite = body.sprite;
+      if (!sprite) return;
+      sprite.setInteractive({ useHandCursor: true });
+      this.input.setDraggable(sprite);
+      sprite.on("dragstart", (pointer) => {
+        if (pointer?.event?.stopPropagation) pointer.event.stopPropagation();
+        body.dragging = true;
+        sprite._dragging = true;
+        this._draggingFenceAnimal = true;
+        sprite.setDepth((sprite.depth || 15) + 2);
+        body.vx = 0;
+        body.vy = 0;
+      });
+      sprite.on("drag", (_pointer, dragX, dragY) => {
+        sprite.setPosition(dragX, dragY);
+        // 拖拽时避开水池，但不强制进出栏杆
+        const p = this.clampPosToPlaza(dragX, dragY, sprite, false);
+        sprite.setPosition(p.x, p.y);
+      });
+      sprite.on("dragend", () => {
+        body.dragging = false;
+        sprite._dragging = false;
+        this._draggingFenceAnimal = false;
+        sprite.setDepth(sprite.texture?.key === "sheep" ? 15.35 : 15.4);
+        const inside = this.pointInFencePaddock(sprite.x, sprite.y);
+        body.penned = inside;
+        sprite._fencePenned = inside;
+        body.home.x = sprite.x;
+        body.home.y = sprite.y;
+        body.lawnIndex = null;
+        if (inside) {
+          const pt = this.randomPointInsideFencePaddock();
+          if (pt) {
+            body.target.x = pt.x;
+            body.target.y = pt.y;
+          }
+          const kept = this.clampInsideFencePaddock(sprite.x, sprite.y, 5 * (this.plazaScale || 1));
+          sprite.setPosition(kept.x, kept.y);
+        } else {
+          this.clampSpriteToPlaza(sprite);
+        }
+        body.retargetAt = this.time.now + 200;
+      });
+    }
+
+    lawnPatchHasGrass(patch, sheep = null) {
+      if (!patch?.tiles?.length) return false;
+      if (sheep?.penned) {
+        if (!patch.fenced) return false;
+      } else if (patch.fenced) {
+        return false;
+      }
+      return patch.tiles.some((t) => !t.eaten && t.sprite?.active);
+    }
+
+    findNearestGrassTileInPatch(patch, x, y) {
+      if (!patch?.tiles) return null;
+      let best = null;
+      let bestD = Infinity;
+      for (const tile of patch.tiles) {
+        if (tile.eaten || !tile.sprite?.active) continue;
+        const d = Math.hypot(tile.cx - x, tile.cy - y);
+        if (d < bestD) {
+          bestD = d;
+          best = tile;
+        }
+      }
+      return best ? { tile: best, dist: bestD } : null;
+    }
+
+    pickSheepLawn(sh, x, y) {
+      const patches = this.lawnPatches || [];
+      if (!patches.length) {
+        sh.lawnIndex = null;
+        return null;
+      }
+      if (sh.lawnIndex != null) {
+        const cur = patches[sh.lawnIndex];
+        if (this.lawnPatchHasGrass(cur, sh)) return cur;
+        sh.lawnIndex = null;
+      }
+      const claimed = new Set();
+      for (const other of this.sheep || []) {
+        if (other === sh) continue;
+        if (other.lawnIndex != null) claimed.add(other.lawnIndex);
+      }
+      let bestI = -1;
+      let bestD = Infinity;
+      let fallbackI = -1;
+      let fallbackD = Infinity;
+      for (let i = 0; i < patches.length; i++) {
+        if (!this.lawnPatchHasGrass(patches[i], sh)) continue;
+        const d = Math.hypot(patches[i].cx - x, patches[i].cy - y);
+        if (d < fallbackD) {
+          fallbackD = d;
+          fallbackI = i;
+        }
+        if (claimed.has(i)) continue;
+        if (d < bestD) {
+          bestD = d;
+          bestI = i;
+        }
+      }
+      const pick = bestI >= 0 ? bestI : fallbackI;
+      if (pick < 0) {
+        sh.lawnIndex = null;
+        return null;
+      }
+      sh.lawnIndex = pick;
+      return patches[pick];
+    }
+
+    eatLawnTile(tile, now) {
+      if (!tile || tile.eaten) return false;
+      tile.eaten = true;
+      tile.regrowAt = now + SHEEP_GRASS_REGROW_MS;
+      if (tile.sprite?.active) {
+        tile.sprite.setVisible(false);
+      }
+      return true;
+    }
+
+    updateLawnRegrowth(now) {
+      for (const patch of this.lawnPatches || []) {
+        for (const tile of patch.tiles) {
+          if (!tile.eaten) continue;
+          if (now < (tile.regrowAt || 0)) continue;
+          tile.eaten = false;
+          tile.regrowAt = 0;
+          if (tile.sprite?.active) tile.sprite.setVisible(true);
+        }
+      }
+    }
+
+    updateSheep(now, dt) {
+      this.updateLawnRegrowth(now);
+      for (const sh of this.sheep || []) {
+        if (!sh.sprite?.active) continue;
+        if (sh.dragging) continue;
+        const sp = sh.sprite;
+        let x = sp.x;
+        let y = sp.y;
+        const lawn = this.pickSheepLawn(sh, x, y);
+        const grass = lawn ? this.findNearestGrassTileInPatch(lawn, x, y) : null;
+
+        if (grass) {
+          const tx = grass.tile.cx - x;
+          const ty = grass.tile.cy - y;
+          const sm = this.smoothSteer(sh, tx, ty, SHEEP_SPEED * ANIMAL_SPEED_MULT, dt);
+          x += sm.dx;
+          y += sm.dy;
+          if (Math.abs(sm.vx) > 1.2) sp.setFlipX(sm.vx < 0);
+          if (grass.dist < SHEEP_EAT_DIST && now >= (sh.nextEatAt || 0)) {
+            if (this.eatLawnTile(grass.tile, now)) {
+              sh.nextEatAt = now + SHEEP_EAT_COOLDOWN_MS;
+            }
+          }
+        } else {
+          if (now > sh.retargetAt) {
+            sh.retargetAt = now + 1800 + Math.random() * 1600;
+            this.pickSheepWanderTarget(sh);
+          }
+          let tx = sh.target.x - x;
+          let ty = sh.target.y - y;
+          let len = Math.hypot(tx, ty) || 1;
+          if (len < 10) {
+            this.pickSheepWanderTarget(sh);
+            tx = sh.target.x - x;
+            ty = sh.target.y - y;
+          }
+          const sm = this.smoothSteer(sh, tx, ty, SHEEP_SPEED * 0.85 * ANIMAL_SPEED_MULT, dt);
+          x += sm.dx;
+          y += sm.dy;
+          if (Math.abs(sm.vx) > 1.2) sp.setFlipX(sm.vx < 0);
+        }
+
+        sp.setPosition(x, y);
+        this.clampSpriteToPlaza(sp);
+        if (!sh.penned && this.bounceIfNearFountain(sp, now)) {
+          sh.home.x = sp.x;
+          sh.home.y = sp.y;
+          this.pickSheepWanderTarget(sh);
+          sh.retargetAt = now + 500;
+        }
+        this.clampSpriteToPlaza(sp);
+      }
+    }
+
+    pickWeaselTarget(w) {
+      const pt = this.randomPlazaWalkPointAvoidingPools();
+      if (pt) {
+        w.target.x = pt.x;
+        w.target.y = pt.y;
+        return;
+      }
+      w.target.x = w.home.x + (Math.random() - 0.5) * 160;
+      w.target.y = w.home.y + (Math.random() - 0.5) * 120;
+    }
+
+    createWeaselAt(x, y) {
+      const sprite = this.add
+        .image(x, y, "weasel")
+        .setOrigin(0.5, 0.55)
+        .setDepth(15.45)
+        .setScale(1.05);
+      return {
+        sprite,
+        home: { x, y },
+        target: { x, y },
+        retargetAt: 0,
+        chaseChicken: null,
+        huntingChicken: false,
+        fleeUntil: 0,
+        vx: 0,
+        vy: 0,
+      };
+    }
+
+    findWeaselChickenPrey(wx, wy) {
+      let best = null;
+      let bestD = WEASEL_HUNT_RANGE;
+      for (const ch of this.chickens || []) {
+        if (!ch.sprite?.active || ch.penned || ch.dragging) continue;
+        const d = Math.hypot(ch.sprite.x - wx, ch.sprite.y - wy);
+        if (d < bestD) {
+          bestD = d;
+          best = ch;
+        }
+      }
+      return best ? { chicken: best, dist: bestD } : null;
+    }
+
+    nearestWeaselThreat(x, y, maxDist = CHICKEN_FLEE_WEASEL_RANGE) {
+      let best = null;
+      let bestD = maxDist;
+      for (const w of this.weasels || []) {
+        if (!w.sprite?.active) continue;
+        const d = Math.hypot(w.sprite.x - x, w.sprite.y - y);
+        if (d < bestD) {
+          bestD = d;
+          best = w;
+        }
+      }
+      return best ? { weasel: best, dist: bestD } : null;
+    }
+
+    resolveDogWeaselChase(dog, now) {
+      if (dog.chaseWeasel) {
+        const alive = this.weasels.find(
+          (w) =>
+            w === dog.chaseWeasel &&
+            w.sprite?.active &&
+            now >= (w.fleeUntil || 0) &&
+            (w.huntingChicken || w.chaseChicken),
+        );
+        if (alive) {
+          return {
+            weasel: alive,
+            x: alive.sprite.x,
+            y: alive.sprite.y,
+            d: Math.hypot(alive.sprite.x - dog.sprite.x, alive.sprite.y - dog.sprite.y),
+          };
+        }
+        dog.chaseWeasel = null;
+      }
+      let best = null;
+      let bestD = Infinity;
+      for (const w of this.weasels || []) {
+        if (!w.sprite?.active) continue;
+        if (now < (w.fleeUntil || 0)) continue;
+        if (!(w.huntingChicken || w.chaseChicken)) continue;
+        const d = Math.hypot(w.sprite.x - dog.sprite.x, w.sprite.y - dog.sprite.y);
+        if (d < bestD) {
+          bestD = d;
+          best = w;
+        }
+      }
+      if (!best) return null;
+      dog.chaseWeasel = best;
+      return {
+        weasel: best,
+        x: best.sprite.x,
+        y: best.sprite.y,
+        d: bestD,
+      };
+    }
+
+    onDogCaughtWeasel(w, now) {
+      if (!w?.sprite?.active) return;
+      w.chaseChicken = null;
+      w.huntingChicken = false;
+      w.fleeUntil = now + WEASEL_FLEE_AFTER_DOG_MS;
+      w.vx = 0;
+      w.vy = 0;
+      this.pickWeaselTarget(w);
+      w.retargetAt = now + 400;
+    }
+
+    updateWeasels(now, dt) {
+      const dogSp = this.dog?.sprite;
+      for (const w of this.weasels || []) {
+        if (!w.sprite?.active) continue;
+        const sp = w.sprite;
+        let x = sp.x;
+        let y = sp.y;
+        const fleeing = now < (w.fleeUntil || 0);
+
+        if (fleeing && dogSp?.active) {
+          w.chaseChicken = null;
+          w.huntingChicken = false;
+          const dx = x - dogSp.x;
+          const dy = y - dogSp.y;
+          const sm = this.smoothSteer(w, dx, dy, WEASEL_FLEE_DOG_SPEED * ANIMAL_SPEED_MULT, dt, ANIMAL_STEER_ACCEL * 1.4);
+          x += sm.dx;
+          y += sm.dy;
+          if (Math.abs(sm.vx) > 1.2) sp.setFlipX(sm.vx < 0);
+        } else {
+          let prey = null;
+          if (w.chaseChicken) {
+            const alive =
+              this.chickens.find((c) => c === w.chaseChicken && c.sprite?.active && !c.penned && !c.dragging) ||
+              null;
+            if (alive) {
+              prey = {
+                chicken: alive,
+                dist: Math.hypot(alive.sprite.x - x, alive.sprite.y - y),
+              };
+            } else {
+              w.chaseChicken = null;
+            }
+          }
+          if (!prey) {
+            prey = this.findWeaselChickenPrey(x, y);
+            if (prey) w.chaseChicken = prey.chicken;
+          }
+
+          if (prey) {
+            w.huntingChicken = true;
+            const tx = prey.chicken.sprite.x - x;
+            const ty = prey.chicken.sprite.y - y;
+            const sm = this.smoothSteer(w, tx, ty, WEASEL_SPEED * 1.15 * ANIMAL_SPEED_MULT, dt);
+            x += sm.dx;
+            y += sm.dy;
+            if (Math.abs(sm.vx) > 1.2) sp.setFlipX(sm.vx < 0);
+            if (prey.dist < WEASEL_EAT_DIST) {
+              this.killChicken(prey.chicken, now);
+              w.chaseChicken = null;
+              w.huntingChicken = false;
+              w.retargetAt = now + 800;
+              this.pickWeaselTarget(w);
+            }
+          } else {
+            w.huntingChicken = false;
+            w.chaseChicken = null;
+            if (now > w.retargetAt) {
+              w.retargetAt = now + 1600 + Math.random() * 1400;
+              this.pickWeaselTarget(w);
+            }
+            let tx = w.target.x - x;
+            let ty = w.target.y - y;
+            let len = Math.hypot(tx, ty) || 1;
+            if (len < 10) {
+              this.pickWeaselTarget(w);
+              tx = w.target.x - x;
+              ty = w.target.y - y;
+            }
+            const sm = this.smoothSteer(w, tx, ty, WEASEL_SPEED * ANIMAL_SPEED_MULT, dt);
+            x += sm.dx;
+            y += sm.dy;
+            if (Math.abs(sm.vx) > 1.2) sp.setFlipX(sm.vx < 0);
+          }
+        }
+
+        sp.setPosition(x, y);
+        this.clampSpriteToPlaza(sp);
+        if (this.bounceIfNearFountain(sp, now)) {
+          w.home.x = sp.x;
+          w.home.y = sp.y;
+          this.pickWeaselTarget(w);
+          w.retargetAt = now + 500;
+        }
+        this.clampSpriteToPlaza(sp);
+      }
+    }
+
+    onDogCaughtChicken(ch, now) {
+      if (!ch?.sprite?.active) return;
+      ch.dogChaseCount = (ch.dogChaseCount || 0) + 1;
+      if (ch.dogChaseCount >= CHICKEN_DOG_CHASEES_TO_DIE) {
+        this.killChicken(ch, now);
+      }
+    }
+
+    resolveDogChickenChase(dog, now) {
+      if (dog.chaseChicken) {
+        const alive = this.chickens.find(
+          (c) => c === dog.chaseChicken && c.sprite?.active && !c.penned && !c.dragging,
+        );
+        if (alive) {
+          return {
+            chicken: alive,
+            x: alive.sprite.x,
+            y: alive.sprite.y,
+            d: Math.hypot(alive.sprite.x - dog.sprite.x, alive.sprite.y - dog.sprite.y),
+          };
+        }
+        dog.chaseChicken = null;
+      }
+      if (now < (dog.nextChickenChaseAt || 0)) return null;
+      if (!this.chickens.length) return null;
+      let best = null;
+      let bestD = Infinity;
+      for (const ch of this.chickens) {
+        if (!ch.sprite?.active || ch.penned || ch.dragging) continue;
+        const d = Math.hypot(ch.sprite.x - dog.sprite.x, ch.sprite.y - dog.sprite.y);
+        if (d < bestD) {
+          bestD = d;
+          best = ch;
+        }
+      }
+      if (!best) return null;
+      dog.chaseChicken = best;
+      dog.restUntil = 0;
+      dog.huntStartedAt = 0;
+      return {
+        chicken: best,
+        x: best.sprite.x,
+        y: best.sprite.y,
+        d: bestD,
+      };
+    }
+
+    updateChickens(now, dt) {
+      const dog = this.dog;
+      const dogSp = dog?.sprite;
+      const chasing = dog?.chaseChicken || null;
+
+      for (let ei = this.chickenEggs.length - 1; ei >= 0; ei--) {
+        const egg = this.chickenEggs[ei];
+        if (now < egg.hatchAt) continue;
+        if (this.chickens.length < MAX_CHICKENS && egg.sprite?.active) {
+          const c = this.clampPosToPlaza(egg.sprite.x, egg.sprite.y);
+          const ch = this.createChickenAt(c.x, c.y);
+          this.pickChickenTarget(ch);
+          ch.retargetAt = now + 400;
+          this.chickens.push(ch);
+        }
+        egg.sprite?.destroy();
+        this.chickenEggs.splice(ei, 1);
+      }
+
+      if (
+        this.chickens.length > 0 &&
+        this.chickens.length < MAX_CHICKENS &&
+        now >= this._nextChickenLayAt
+      ) {
+        this._nextChickenLayAt = now + CHICKEN_LAY_INTERVAL_MS + Math.random() * 12000;
+        const layer = this.chickens[Math.floor(Math.random() * this.chickens.length)];
+        if (layer?.sprite?.active) {
+          const c = this.clampPosToPlaza(
+            layer.sprite.x + (Math.random() - 0.5) * 12,
+            layer.sprite.y + (Math.random() - 0.5) * 12,
+          );
+          this.chickenEggs.push(this.createChickenEggAt(c.x, c.y, now));
+        }
+      } else if (this.chickens.length >= MAX_CHICKENS && now >= this._nextChickenLayAt) {
+        // 满员也生蛋（不孵化直到有空位）
+        this._nextChickenLayAt = now + CHICKEN_LAY_INTERVAL_MS + Math.random() * 12000;
+        const layer = this.chickens[Math.floor(Math.random() * this.chickens.length)];
+        if (layer?.sprite?.active && this.chickenEggs.length < 8) {
+          const c = this.clampPosToPlaza(
+            layer.sprite.x + (Math.random() - 0.5) * 12,
+            layer.sprite.y + (Math.random() - 0.5) * 12,
+          );
+          this.chickenEggs.push(this.createChickenEggAt(c.x, c.y, now));
+        }
+      }
+
+      for (const ch of this.chickens) {
+        if (!ch.sprite?.active) continue;
+        if (ch.dragging) continue;
+        const sp = ch.sprite;
+        let x = sp.x;
+        let y = sp.y;
+        const fleeingDog = !ch.penned && chasing === ch && dogSp?.active;
+        const weaselThreat =
+          !ch.penned && !fleeingDog ? this.nearestWeaselThreat(x, y, CHICKEN_FLEE_WEASEL_RANGE) : null;
+
+        if (fleeingDog) {
+          const dx = x - dogSp.x;
+          const dy = y - dogSp.y;
+          const sm = this.smoothSteer(ch, dx, dy, CHICKEN_FLEE_DOG_SPEED * ANIMAL_SPEED_MULT, dt, ANIMAL_STEER_ACCEL * 1.4);
+          x += sm.dx;
+          y += sm.dy;
+          if (Math.abs(sm.vx) > 1.2) sp.setFlipX(sm.vx < 0);
+        } else if (weaselThreat) {
+          const wx = weaselThreat.weasel.sprite.x;
+          const wy = weaselThreat.weasel.sprite.y;
+          const dx = x - wx;
+          const dy = y - wy;
+          const sm = this.smoothSteer(ch, dx, dy, CHICKEN_FLEE_WEASEL_SPEED * ANIMAL_SPEED_MULT, dt, ANIMAL_STEER_ACCEL * 1.35);
+          x += sm.dx;
+          y += sm.dy;
+          if (Math.abs(sm.vx) > 1.2) sp.setFlipX(sm.vx < 0);
+        } else if (ch.penned) {
+          if (now > ch.retargetAt) {
+            ch.retargetAt = now + 1600 + Math.random() * 1400;
+            this.pickChickenTarget(ch);
+          }
+          let tx = ch.target.x - x;
+          let ty = ch.target.y - y;
+          let len = Math.hypot(tx, ty) || 1;
+          if (len < 8) {
+            this.pickChickenTarget(ch);
+            tx = ch.target.x - x;
+            ty = ch.target.y - y;
+          }
+          const sm = this.smoothSteer(ch, tx, ty, CHICKEN_SPEED * ANIMAL_SPEED_MULT, dt);
+          x += sm.dx;
+          y += sm.dy;
+          if (Math.abs(sm.vx) > 1.2) sp.setFlipX(sm.vx < 0);
+        } else {
+          let huntRoach = null;
+          let huntApple = null;
+          let bestD = CHICKEN_ROACH_HUNT_RANGE;
+          for (const ro of this.roaches || []) {
+            if (this.isRoachFeedingOnDeadShrimp(ro)) continue;
+            const d = Math.hypot(ro.sprite.x - x, ro.sprite.y - y);
+            if (d < bestD) {
+              bestD = d;
+              huntRoach = ro;
+              huntApple = null;
+            }
+          }
+          const landApple = this.findNearestLandApple(x, y, CHICKEN_ROACH_HUNT_RANGE);
+          if (landApple && landApple.dist < bestD) {
+            bestD = landApple.dist;
+            huntRoach = null;
+            huntApple = landApple;
+          }
+          if (huntRoach || huntApple) {
+            const tx = huntRoach ? huntRoach.sprite.x - x : huntApple.ap.sprite.x - x;
+            const ty = huntRoach ? huntRoach.sprite.y - y : huntApple.ap.sprite.y - y;
+            const sm = this.smoothSteer(ch, tx, ty, CHICKEN_SPEED * 1.15 * ANIMAL_SPEED_MULT, dt);
+            x += sm.dx;
+            y += sm.dy;
+            if (Math.abs(sm.vx) > 1.2) sp.setFlipX(sm.vx < 0);
+            if (huntRoach && bestD < CHICKEN_ROACH_EAT_DIST) {
+              const ri = this.roaches.indexOf(huntRoach);
+              if (ri >= 0) this.removeRoachAt(ri, now);
+            } else if (huntApple && bestD < APPLE_EAT_DIST) {
+              this.removeFallenAppleAt(huntApple.index);
+            }
+          } else {
+            if (now > ch.retargetAt) {
+              ch.retargetAt = now + 1600 + Math.random() * 1400;
+              this.pickChickenTarget(ch);
+            }
+            let tx = ch.target.x - x;
+            let ty = ch.target.y - y;
+            let len = Math.hypot(tx, ty) || 1;
+            if (len < 8) {
+              this.pickChickenTarget(ch);
+              tx = ch.target.x - x;
+              ty = ch.target.y - y;
+            }
+            const sm = this.smoothSteer(ch, tx, ty, CHICKEN_SPEED * ANIMAL_SPEED_MULT, dt);
+            x += sm.dx;
+            y += sm.dy;
+            if (Math.abs(sm.vx) > 1.2) sp.setFlipX(sm.vx < 0);
+          }
+        }
+
+        sp.setPosition(x, y);
+        this.clampSpriteToPlaza(sp);
+        if (!ch.penned && this.bounceIfNearFountain(sp, now)) {
+          ch.home.x = sp.x;
+          ch.home.y = sp.y;
+          this.pickChickenTarget(ch);
+          ch.retargetAt = now + 500;
+        }
+        this.clampSpriteToPlaza(sp);
+      }
+    }
+
+    updateDog(now, dt) {
+      const dog = this.dog;
+      if (!dog?.sprite?.active) return;
+      const sp = dog.sprite;
+      let x = sp.x;
+      let y = sp.y;
+      const cmdPrey = this.resolveDogCommandPrey(dog);
+
+      if (cmdPrey) {
+        // 点选命令：追老鼠/蜥蜴/蟑螂，追上后吃掉
+        const tx = cmdPrey.x - x;
+        const ty = cmdPrey.y - y;
+        const sm = this.smoothSteer(dog, tx, ty, DOG_HUNT_SPEED * ANIMAL_SPEED_MULT, dt);
+        x += sm.dx;
+        y += sm.dy;
+        this.applyAnimalFlip(sp, dog, tx > 0 ? false : true);
+        if (Math.abs(sm.vx) > 1.2) sp.setFlipX(sm.vx > 0);
+        const catchD = Math.hypot(cmdPrey.x - x, cmdPrey.y - y);
+        if (catchD < DOG_CATCH_DIST) {
+          this.dogConsumePrey(cmdPrey.kind, cmdPrey.sprite, now);
+          dog.commandPrey = null;
+        }
+      } else {
+        const weaselChase = this.resolveDogWeaselChase(dog, now);
+        if (weaselChase) {
+          dog.chaseKind = "weasel";
+          dog.chaseChicken = null;
+          const tx = weaselChase.x - x;
+          const ty = weaselChase.y - y;
+          const sm = this.smoothSteer(dog, tx, ty, DOG_HUNT_SPEED * 1.12 * ANIMAL_SPEED_MULT, dt);
+          x += sm.dx;
+          y += sm.dy;
+          if (Math.abs(sm.vx) > 1.2) sp.setFlipX(sm.vx > 0);
+          else if (Math.abs(tx) > 0.5) sp.setFlipX(tx > 0);
+          if (
+            weaselChase.d < DOG_WEASEL_CATCH_DIST ||
+            Math.hypot(weaselChase.x - x, weaselChase.y - y) < DOG_WEASEL_CATCH_DIST
+          ) {
+            this.onDogCaughtWeasel(weaselChase.weasel, now);
+            dog.chaseWeasel = null;
+            dog.chaseKind = null;
+            dog.restUntil = Math.max(dog.restUntil || 0, now + 1800);
+          }
+        } else {
+        const chickenChase = this.resolveDogChickenChase(dog, now);
+        if (chickenChase) {
+          dog.chaseKind = "chicken";
+          const tx = chickenChase.x - x;
+          const ty = chickenChase.y - y;
+          const sm = this.smoothSteer(dog, tx, ty, DOG_HUNT_SPEED * 1.05 * ANIMAL_SPEED_MULT, dt);
+          x += sm.dx;
+          y += sm.dy;
+          if (Math.abs(sm.vx) > 1.2) sp.setFlipX(sm.vx > 0);
+          else if (Math.abs(tx) > 0.5) sp.setFlipX(tx > 0);
+          if (chickenChase.d < DOG_CHICKEN_CATCH_DIST || Math.hypot(chickenChase.x - x, chickenChase.y - y) < DOG_CHICKEN_CATCH_DIST) {
+            this.onDogCaughtChicken(chickenChase.chicken, now);
+            dog.chaseChicken = null;
+            dog.nextChickenChaseAt = now + DOG_CHICKEN_CHASE_INTERVAL_MS;
+            dog.chaseKind = null;
+            dog.restUntil = Math.max(dog.restUntil || 0, now + 2500);
+          }
+        } else {
+        const resting = now < (dog.restUntil || 0);
+        if (resting) {
+          dog.chaseKind = null;
+          dog.chaseSnake = null;
+          dog.chaseFrog = null;
+          dog.chaseWeasel = null;
+          dog.huntStartedAt = 0;
+          if (now > dog.retargetAt) {
+            dog.retargetAt = now + 2000 + Math.random() * 1800;
+            this.pickDogTarget(dog);
+          }
+          let tx = dog.target.x - x;
+          let ty = dog.target.y - y;
+          let len = Math.hypot(tx, ty) || 1;
+          if (len < 8) {
+            this.pickDogTarget(dog);
+            tx = dog.target.x - x;
+            ty = dog.target.y - y;
+            len = Math.hypot(tx, ty) || 1;
+          }
+          const sm = this.smoothSteer(dog, tx, ty, DOG_REST_SPEED * ANIMAL_SPEED_MULT, dt, ANIMAL_STEER_ACCEL * 0.7);
+          x += sm.dx;
+          y += sm.dy;
+          if (Math.abs(sm.vx) > 1.2) sp.setFlipX(sm.vx > 0);
+          else if (Math.abs(tx) > 0.5) sp.setFlipX(tx > 0);
+        } else {
+          if (!dog.huntStartedAt) dog.huntStartedAt = now;
+          if (now - dog.huntStartedAt >= DOG_HUNT_TIMEOUT_MS) {
+            this.beginDogRest(dog, now);
+          } else {
+            const prey = this.resolveDogPrey(dog);
+            if (prey) {
+              dog.chaseKind = prey.kind;
+              dog.chaseSnake = prey.snake || null;
+              dog.chaseFrog = prey.frog || null;
+              const tx = prey.x - x;
+              const ty = prey.y - y;
+              const sm = this.smoothSteer(dog, tx, ty, DOG_HUNT_SPEED * ANIMAL_SPEED_MULT, dt);
+              x += sm.dx;
+              y += sm.dy;
+              if (Math.abs(sm.vx) > 1.2) sp.setFlipX(sm.vx > 0);
+              else if (Math.abs(tx) > 0.5) sp.setFlipX(tx > 0);
+              const catchD = Math.hypot(prey.x - x, prey.y - y);
+              if (catchD < DOG_CATCH_DIST) {
+                // 抓到：猎物不消失，狗休息 5 分钟
+                this.beginDogRest(dog, now);
+              }
+            } else {
+              dog.chaseKind = null;
+              dog.chaseSnake = null;
+              dog.chaseFrog = null;
+              if (now > dog.retargetAt) {
+                dog.retargetAt = now + 1600 + Math.random() * 1400;
+                this.pickDogTarget(dog);
+              }
+              let tx = dog.target.x - x;
+              let ty = dog.target.y - y;
+              let len = Math.hypot(tx, ty) || 1;
+              if (len < 8) {
+                this.pickDogTarget(dog);
+                tx = dog.target.x - x;
+                ty = dog.target.y - y;
+                len = Math.hypot(tx, ty) || 1;
+              }
+              const sm = this.smoothSteer(dog, tx, ty, DOG_HUNT_SPEED * 0.7 * ANIMAL_SPEED_MULT, dt);
+              x += sm.dx;
+              y += sm.dy;
+              if (Math.abs(sm.vx) > 1.2) sp.setFlipX(sm.vx > 0);
+              else if (Math.abs(tx) > 0.5) sp.setFlipX(tx > 0);
+            }
+          }
+        }
+        }
+        }
+      }
+
+      sp.setPosition(x, y);
+      this.clampSpriteToPlaza(sp);
+      if (this.bounceIfNearFountain(sp, now)) {
+        dog.home.x = sp.x;
+        dog.home.y = sp.y;
+        this.pickDogTarget(dog);
+        dog.retargetAt = now + 500;
+      }
+      this.clampSpriteToPlaza(sp);
+
+      // 老鼠碰到狗就消失；老鼠不主动躲开狗（点选追鼠时也会在追上时吃掉）
+      for (let mi = this.mice.length - 1; mi >= 0; mi--) {
+        const m = this.mice[mi];
+        if (!m.sprite?.active) continue;
+        if (Math.hypot(m.sprite.x - sp.x, m.sprite.y - sp.y) < DOG_MOUSE_EAT_DIST) {
+          if (dog.commandPrey?.sprite === m.sprite) dog.commandPrey = null;
+          this.clearCatChaseOfMouse(m.sprite);
+          m.sprite.destroy();
+          this.mice.splice(mi, 1);
+        }
+      }
     }
 
     clampSpriteFlying(sprite) {
@@ -3557,6 +5011,8 @@ function initWorld() {
         fleeUntil: 0,
         beingChased: false,
         chasedBySnake: null,
+        vx: 0,
+        vy: 0,
       };
       this.pickSparrowFlyTarget(sp);
       sp.retargetAt = this.time.now + 600 + Math.random() * 900;
@@ -3605,7 +5061,7 @@ function initWorld() {
         sp.sprite.destroy();
         const idx = this.sparrows.indexOf(sp);
         if (idx >= 0) this.sparrows.splice(idx, 1);
-        if (this.catChaseSparrow === sp.sprite) this.catChaseSparrow = null;
+        if (this.anyCatChasingSparrow(sp.sprite)) this.clearCatChaseOfSparrow(sp.sprite);
         if (sp.chasedBySnake) sp.chasedBySnake.chasingSparrow = null;
         return true;
       }
@@ -3620,7 +5076,7 @@ function initWorld() {
       sp.target.x = sx + (Math.random() - 0.5) * 120;
       sp.target.y = sy - 40 - Math.random() * 50;
       sp.retargetAt = now + SPARROW_ESCAPE_FLY_MS;
-      if (this.catChaseSparrow === sp.sprite) this.catChaseSparrow = null;
+      if (this.anyCatChasingSparrow(sp.sprite)) this.clearCatChaseOfSparrow(sp.sprite);
       if (sp.chasedBySnake) {
         sp.chasedBySnake.chasingSparrow = null;
         sp.chasedBySnake = null;
@@ -3681,18 +5137,19 @@ function initWorld() {
     }
 
     /** 当前帧猫是否在追老鼠（用于上树：追鼠时不爬树）。老鼠少于 3 只时暂停追猎，让种群恢复。 */
-    resolveCatMouseChase(cat) {
+    resolveCatMouseChase(catEntry) {
+      const cat = catEntry.sprite;
       const MOUSE_AGRO = 52;
       const MIN_MICE_FOR_CAT_CHASE = 3;
       if (this.mice.length < MIN_MICE_FOR_CAT_CHASE) {
-        this.catChaseMouse = null;
+        catEntry.chaseMouse = null;
         return null;
       }
       let chaseMouseSprite = null;
-      if (this.catChaseMouse) {
-        const alive = this.mice.find((mm) => mm.sprite === this.catChaseMouse);
+      if (catEntry.chaseMouse) {
+        const alive = this.mice.find((mm) => mm.sprite === catEntry.chaseMouse);
         if (alive) chaseMouseSprite = alive.sprite;
-        else this.catChaseMouse = null;
+        else catEntry.chaseMouse = null;
       }
       if (!chaseMouseSprite) {
         let nearestD = MOUSE_AGRO;
@@ -3705,7 +5162,7 @@ function initWorld() {
           }
         }
         if (nearest) {
-          this.catChaseMouse = nearest.sprite;
+          catEntry.chaseMouse = nearest.sprite;
           chaseMouseSprite = nearest.sprite;
         }
       }
@@ -3713,19 +5170,19 @@ function initWorld() {
     }
 
     /** 猫追落地麻雀（优先级低于老鼠） */
-    resolveCatSparrowChase(cat, chaseMouseSprite) {
+    resolveCatSparrowChase(catEntry, chaseMouseSprite) {
       if (chaseMouseSprite) {
-        this.catChaseSparrow = null;
+        catEntry.chaseSparrow = null;
         return null;
       }
       let chaseEntry = null;
-      if (this.catChaseSparrow) {
-        chaseEntry = this.sparrows.find((sp) => sp.sprite === this.catChaseSparrow && sp.mode === "land");
-        if (!chaseEntry) this.catChaseSparrow = null;
+      if (catEntry.chaseSparrow) {
+        chaseEntry = this.sparrows.find((sp) => sp.sprite === catEntry.chaseSparrow && sp.mode === "land");
+        if (!chaseEntry) catEntry.chaseSparrow = null;
       }
       if (!chaseEntry) {
-        chaseEntry = this.nearestGroundSparrowEntry(cat.x, cat.y, SPARROW_PREDATOR_AGRO);
-        if (chaseEntry) this.catChaseSparrow = chaseEntry.sprite;
+        chaseEntry = this.nearestGroundSparrowEntry(catEntry.sprite.x, catEntry.sprite.y, SPARROW_PREDATOR_AGRO);
+        if (chaseEntry) catEntry.chaseSparrow = chaseEntry.sprite;
       }
       if (chaseEntry) chaseEntry.beingChased = true;
       return chaseEntry;
@@ -3733,29 +5190,30 @@ function initWorld() {
 
     update(_t, delta) {
       const now = this.time.now;
-      const dt = Math.min((delta || 16) / 1000, 0.045);
+      const dt = Math.min((delta || 16) / 1000, 0.055);
       this.updatePlazaPoolFlow(now);
       this.updateFountainWater(now);
       this.updateStallShrimpEggPulls(now, dt);
       this.updateStallShrimpCooloffs(now, dt);
       this.updateDeadStallShrimpSites(now);
       this.updateStallShrimpReplacements(now, dt);
+      this.updateFallenApples(now, dt);
       this.updatePondFish(now, dt);
       this.updateRoachRoyale(now);
-      const cat = this.cat;
-      if (!cat) return;
+      this.syncPrimaryCat();
+      const catEntries = this.activeCatEntries();
+      if (!catEntries.length) return;
 
-      if (!this.catFishing && !this.arboreal && this.plazaPools.length && now >= this._nextCatFishAt) {
-        const pi = this.nearestPlazaPoolIndexTo(cat.x, cat.y);
+      for (const ce of catEntries) {
+        if (ce.fishing || this.arboreal || !this.plazaPools.length) continue;
+        if (now < ce.nextFishAt) continue;
+        if (this.arboreal?.catEntry === ce) continue;
+        const pi = this.nearestPlazaPoolIndexTo(ce.sprite.x, ce.sprite.y);
         if (pi >= 0) {
-          this.catFishing = { phase: "approach", poolIndex: pi };
-          this.catChaseMouse = null;
+          ce.fishing = { phase: "approach", poolIndex: pi };
+          ce.chaseMouse = null;
         }
       }
-      const cx0 = cat.x;
-      const cy0 = cat.y;
-      const chaseMouseSpriteEarly = this.resolveCatMouseChase(cat);
-      const MOUSE_AGRO = 52;
       const MOUSE_CATCH = 13;
       const MOUSE_BREED_DIST = 22;
       const MAX_MICE = 12;
@@ -3845,11 +5303,11 @@ function initWorld() {
           if (chaseRo) {
             const mtx = chaseRo.sprite.x - mx;
             const mty = chaseRo.sprite.y - my;
-            const mlen = Math.hypot(mtx, mty) || 1;
-            mx += (mtx / mlen) * 28 * dt;
-            my += (mty / mlen) * 28 * dt;
+            const sm = this.smoothSteer(m, mtx, mty, 28 * ANIMAL_SPEED_MULT, dt);
+            mx += sm.dx;
+            my += sm.dy;
             m.sprite.setPosition(mx, my);
-            m.sprite.setFlipX(mtx < 0);
+            this.applyAnimalFlip(m.sprite, m, sm.vx < 0);
             this.clampSpriteToPlaza(m.sprite);
             if (now >= (m.nextRoachEatAt || 0)) {
               for (let ri = this.roaches.length - 1; ri >= 0; ri--) {
@@ -3880,6 +5338,9 @@ function initWorld() {
 
         let mx = m.sprite.x;
         let my = m.sprite.y;
+        const nearCat = this.nearestCatEntry(mx, my);
+        const cx0 = nearCat ? nearCat.sprite.x : mx;
+        const cy0 = nearCat ? nearCat.sprite.y : my;
         let mtx;
         let mty;
         let mlen;
@@ -3889,6 +5350,8 @@ function initWorld() {
         if (royale && this.roaches.length) {
           chaseRoachMouse = this.findNearestRoachPrey(mx, my);
         }
+        const chaseAppleMouse =
+          !chaseRoachMouse && !royale ? this.findNearestLandApple(mx, my, APPLE_ANIMAL_SEEK_RANGE) : null;
 
         const mousePanic =
           royale && chaseRoachMouse ? false : this.mouseSeeksManhole(m, cx0, cy0, now);
@@ -3897,6 +5360,11 @@ function initWorld() {
         if (chaseRoachMouse) {
           mtx = chaseRoachMouse.sprite.x - mx;
           mty = chaseRoachMouse.sprite.y - my;
+          mlen = Math.hypot(mtx, mty) || 1;
+          flipLeft = mtx < 0;
+        } else if (chaseAppleMouse && !mousePanic) {
+          mtx = chaseAppleMouse.ap.sprite.x - mx;
+          mty = chaseAppleMouse.ap.sprite.y - my;
           mlen = Math.hypot(mtx, mty) || 1;
           flipLeft = mtx < 0;
         } else if (herdSeek && !mousePanic) {
@@ -3945,11 +5413,13 @@ function initWorld() {
           flipLeft = (m.target.x - mx) < 0;
         }
 
-        const vMouse = chaseRoachMouse ? 28 : 21;
+        const vMouse = (chaseRoachMouse || chaseAppleMouse ? 28 : 21) * ANIMAL_SPEED_MULT;
 
         if (chaseRoachMouse) {
-          mx += (mtx / mlen) * vMouse * dt;
-          my += (mty / mlen) * vMouse * dt;
+          const sm = this.smoothSteer(m, mtx, mty, vMouse, dt);
+          mx += sm.dx;
+          my += sm.dy;
+          flipLeft = sm.vx < 0;
         } else if (herdSeek && !mousePanic) {
           let sx = mtx / mlen;
           let sy = mty / mlen;
@@ -3970,11 +5440,15 @@ function initWorld() {
             sx /= sl;
             sy /= sl;
           }
-          mx += sx * vMouse * dt;
-          my += sy * vMouse * dt;
+          const sm = this.smoothSteer(m, sx, sy, vMouse, dt);
+          mx += sm.dx;
+          my += sm.dy;
+          flipLeft = sm.vx < 0;
         } else {
-          mx += (mtx / mlen) * vMouse * dt;
-          my += (mty / mlen) * vMouse * dt;
+          const sm = this.smoothSteer(m, mtx, mty, vMouse, dt);
+          mx += sm.dx;
+          my += sm.dy;
+          flipLeft = sm.vx < 0;
           let mdx = mx - cx0;
           let mdy = my - cy0;
           let mdist = Math.hypot(mdx, mdy) || 1;
@@ -3987,7 +5461,7 @@ function initWorld() {
 
         m.sprite.setPosition(mx, my);
         this.clampSpriteToPlaza(m.sprite);
-        m.sprite.setFlipX(flipLeft);
+        this.applyAnimalFlip(m.sprite, m, flipLeft);
         if (this.bounceIfNearFountain(m.sprite, now)) {
           m.home.x = m.sprite.x;
           m.home.y = m.sprite.y;
@@ -4006,6 +5480,7 @@ function initWorld() {
             }
           }
         }
+        if (!royale) this.tryEatLandApple(m.sprite.x, m.sprite.y, APPLE_EAT_DIST);
         if (now >= (m.nextEggEatAt || 0) && !royale) {
           for (let gi = this.lizardEggs.length - 1; gi >= 0; gi--) {
             const egg = this.lizardEggs[gi];
@@ -4069,10 +5544,14 @@ function initWorld() {
         const deadTarget =
           royale || roachMh ? null : this.findNearestDeadStallShrimp(rx, ry);
         const deadShrimpSeek = !!deadTarget;
+        const appleSeek =
+          !royale && !roachMh && !deadShrimpSeek
+            ? this.findNearestLandApple(rx, ry, APPLE_ANIMAL_SEEK_RANGE)
+            : null;
         const deadFeeding = this.isRoachFeedingOnDeadShrimp(ro);
         const psRoach = this.plazaScale || 1;
 
-        if (!roachMh && !deadShrimpSeek && now > ro.retargetAt) {
+        if (!roachMh && !deadShrimpSeek && !appleSeek && now > ro.retargetAt) {
           ro.retargetAt = now + (royale ? 420 : 1600) + Math.random() * (royale ? 600 : 2000);
           if (royale) this.pickRoachTargetAwayFromPredators(ro);
           else this.pickRoachTarget(ro);
@@ -4093,6 +5572,10 @@ function initWorld() {
           rtx = deadTarget.x - rx;
           rty = deadTarget.y - ry;
           rlen = Math.hypot(rtx, rty) || 1;
+        } else if (appleSeek) {
+          rtx = appleSeek.ap.sprite.x - rx;
+          rty = appleSeek.ap.sprite.y - ry;
+          rlen = Math.hypot(rtx, rty) || 1;
         } else {
           rtx = ro.target.x - rx;
           rty = ro.target.y - ry;
@@ -4104,15 +5587,19 @@ function initWorld() {
             rlen = Math.hypot(rtx, rty) || 1;
           }
         }
-        let vRoachEff = V_ROACH;
-        if (roachPanic) vRoachEff = V_ROACH * 1.35;
+        let vRoachEff = V_ROACH * ANIMAL_SPEED_MULT;
+        if (roachPanic) vRoachEff = V_ROACH * 1.35 * ANIMAL_SPEED_MULT;
+        else if (appleSeek) vRoachEff = V_ROACH * 1.12 * ANIMAL_SPEED_MULT;
         else if (deadShrimpSeek) {
           vRoachEff = deadFeeding
-            ? V_ROACH * DEAD_SHRIMP_ROACH_FEED_SLOW_MULT
-            : V_ROACH * DEAD_SHRIMP_ROACH_SEEK_SPEED_MULT;
+            ? V_ROACH * DEAD_SHRIMP_ROACH_FEED_SLOW_MULT * ANIMAL_SPEED_MULT
+            : V_ROACH * DEAD_SHRIMP_ROACH_SEEK_SPEED_MULT * ANIMAL_SPEED_MULT;
         }
-        rx += (rtx / rlen) * vRoachEff * dt;
-        ry += (rty / rlen) * vRoachEff * dt;
+        {
+          const sm = this.smoothSteer(ro, rtx, rty, vRoachEff, dt, ANIMAL_STEER_ACCEL * 1.15);
+          rx += sm.dx;
+          ry += sm.dy;
+        }
 
         const fleeReduce = deadFeeding
           ? 0
@@ -4177,8 +5664,9 @@ function initWorld() {
         ro.sprite.setPosition(rx, ry);
         this.clampSpriteToPlaza(ro.sprite);
         if (roachMh) ro.sprite.setFlipX(rtx < 0);
-        else if (deadShrimpSeek) ro.sprite.setFlipX(rtx < 0);
+        else if (deadShrimpSeek || appleSeek) ro.sprite.setFlipX(rtx < 0);
         else ro.sprite.setFlipX((ro.target.x - rx) < 0);
+        if (!roachMh && !royale) this.tryEatLandApple(rx, ry, APPLE_EAT_DIST);
         if (this.bounceIfNearFountain(ro.sprite, now)) {
           ro.home.x = ro.sprite.x;
           ro.home.y = ro.sprite.y;
@@ -4234,7 +5722,7 @@ function initWorld() {
         }
       }
 
-      const V_SNAKE = royale ? 24 : 22;
+      const V_SNAKE = (royale ? 24 : 22) * ANIMAL_SPEED_MULT;
       const SNAKE_HUNT_RANGE = 118;
       const SNAKE_WRIGGLE_SPEED = 13;
       const SNAKE_SIDE_SLEW = 26;
@@ -4369,8 +5857,16 @@ function initWorld() {
         const side = Math.sin(snk.wrigglePhase) * SNAKE_SIDE_SLEW * dt;
         const px = -uy;
         const py = ux;
-        sx += ux * V_SNAKE * dt + px * side;
-        sy += uy * V_SNAKE * dt + py * side;
+        {
+          const sm = this.smoothSteer(snk, ux, uy, V_SNAKE, dt, ANIMAL_STEER_ACCEL * 0.85);
+          sx += sm.dx + px * side;
+          sy += sm.dy + py * side;
+        }
+        {
+          const fled = this.applyFleeFromDog(sx, sy, now, dt);
+          sx = fled.x;
+          sy = fled.y;
+        }
 
         sp.setPosition(sx, sy);
         this.clampSpriteToPlaza(sp);
@@ -4446,20 +5942,11 @@ function initWorld() {
         }
       }
 
-      let skipCatGround = false;
+      // 爬树：先处理蜥蜴独自下树 / 停在树枝；再给最近的猫指派上树
       if (this.arboreal && !royale) {
         const a = this.arboreal;
         const treeLizSp = a.liz.sprite;
-        if (a.catJoined && a.lizardFled && a.catDownAt != null && now >= a.catDownAt) {
-          const cp = this.clampPosToPlaza(a.baseX - 8 + (Math.random() - 0.5) * 4, a.baseY + 4, this.cat);
-          this.cat.setPosition(cp.x, cp.y);
-          this.cat.setDepth(15);
-          const lzRef = a.liz;
-          this.arboreal = null;
-          this._arborealCooldownUntil = now + 900;
-          this.pickLizardTarget(lzRef);
-          lzRef.retargetAt = now + 700;
-        } else if (!a.catJoined && !a.lizardFled && now >= a.lizardSoloDownAt) {
+        if (!a.catJoined && !a.lizardFled && now >= a.lizardSoloDownAt) {
           const lp = this.clampPosToPlaza(a.baseX + (Math.random() - 0.5) * 6, a.baseY + 2, treeLizSp);
           treeLizSp.setPosition(lp.x, lp.y);
           treeLizSp.setDepth(16);
@@ -4468,13 +5955,35 @@ function initWorld() {
           this._arborealCooldownUntil = now + 900;
           this.pickLizardTarget(lzRef);
           lzRef.retargetAt = now + 700;
-        } else {
-          if (!a.lizardFled) {
-            treeLizSp.setPosition(a.lizardPerchX, a.lizardPerchY);
-            treeLizSp.setDepth(20);
-            treeLizSp.setFlipX(a.lizardFlip);
-          }
-          if (!a.catJoined && !chaseMouseSpriteEarly && !a.lizardFled) {
+        } else if (!a.lizardFled) {
+          treeLizSp.setPosition(a.lizardPerchX, a.lizardPerchY);
+          treeLizSp.setDepth(20);
+          treeLizSp.setFlipX(a.lizardFlip);
+        }
+        if (this.arboreal && !a.catEntry) {
+          const nearest = this.nearestCatEntry(a.baseX, a.baseY);
+          if (nearest && !nearest.fishing) a.catEntry = nearest;
+        }
+      }
+
+      // 多猫：爬树 / 捕鱼 / 地面追猎各自独立（同一时刻只有一只猫上树）
+      for (const catEntry of catEntries) {
+        const cat = catEntry.sprite;
+        let skipCatGround = false;
+        const chaseMouseSpriteEarly = this.resolveCatMouseChase(catEntry);
+
+        if (this.arboreal && !royale && this.arboreal.catEntry === catEntry) {
+          const a = this.arboreal;
+          if (a.catJoined && a.lizardFled && a.catDownAt != null && now >= a.catDownAt) {
+            const cp = this.clampPosToPlaza(a.baseX - 8 + (Math.random() - 0.5) * 4, a.baseY + 4, cat);
+            cat.setPosition(cp.x, cp.y);
+            cat.setDepth(15);
+            const lzRef = a.liz;
+            this.arboreal = null;
+            this._arborealCooldownUntil = now + 900;
+            this.pickLizardTarget(lzRef);
+            lzRef.retargetAt = now + 700;
+          } else if (!a.catJoined && !chaseMouseSpriteEarly && !a.lizardFled) {
             skipCatGround = true;
             const vCatUp = 34;
             const tcxUp = a.lizardPerchX;
@@ -4495,25 +6004,111 @@ function initWorld() {
               a.catJoined = true;
               a.catDownAt = now + 10000;
               a.lizardFled = true;
-              this.catChaseMouse = null;
+              catEntry.chaseMouse = null;
               this.fleeLizardFromCatArboreal(a, cat, now);
-              this.cat.setPosition(a.catPerchX, a.catPerchY);
-              this.cat.setDepth(21);
+              cat.setPosition(a.catPerchX, a.catPerchY);
+              cat.setDepth(21);
               skipCatGround = true;
             }
           } else if (a.catJoined && a.catDownAt != null && now < a.catDownAt) {
             skipCatGround = true;
-            this.cat.setPosition(a.catPerchX, a.catPerchY);
-            this.cat.setDepth(21);
+            cat.setPosition(a.catPerchX, a.catPerchY);
+            cat.setDepth(21);
             this.aimCatAt(cat, a.liz.sprite.x, a.liz.sprite.y);
+          }
+        }
+
+        if (catEntry.fishing) {
+          skipCatGround = true;
+          this.updateCatFishing(catEntry, now, dt);
+        }
+
+        if (!skipCatGround) {
+          const chaseLiz = this.nearestLizardEntry(cat);
+          const chaseSparrowEntry = this.resolveCatSparrowChase(catEntry, chaseMouseSpriteEarly);
+
+          let chaseMx = null;
+          let chaseMy = null;
+          let chaseMouseSprite = chaseMouseSpriteEarly;
+          let vCat = 25;
+          const dogFlee = this.isDogHunting(now)
+            ? this.applyFleeFromDog(cat.x, cat.y, now, dt)
+            : { fled: false };
+          if (dogFlee.fled) {
+            cat.x = dogFlee.x;
+            cat.y = dogFlee.y;
+            this.clampSpriteToPlaza(cat);
+            const dogSp = this.dog?.sprite;
+            if (dogSp?.active) this.aimCatAt(cat, cat.x * 2 - dogSp.x, cat.y * 2 - dogSp.y);
+            if (this.bounceIfNearFountain(cat, now)) {
+              catEntry.chaseMouse = null;
+            }
+            this.clampSpriteToPlaza(cat);
+          } else {
+            if (chaseMouseSprite) {
+              chaseMx = chaseMouseSprite.x;
+              chaseMy = chaseMouseSprite.y;
+              vCat = 34;
+            } else if (chaseSparrowEntry) {
+              vCat = 32;
+            }
+
+            let tcx = cat.x;
+            let tcy = cat.y;
+            if (chaseMouseSprite) {
+              tcx = chaseMx;
+              tcy = chaseMy;
+            } else if (chaseSparrowEntry) {
+              tcx = chaseSparrowEntry.sprite.x;
+              tcy = chaseSparrowEntry.sprite.y;
+            } else if (chaseLiz) {
+              tcx = chaseLiz.sprite.x;
+              tcy = chaseLiz.sprite.y;
+            }
+
+            const cdx = tcx - cat.x;
+            const cdy = tcy - cat.y;
+            const sm = this.smoothSteer(catEntry, cdx, cdy, vCat * ANIMAL_SPEED_MULT, dt, ANIMAL_STEER_ACCEL * 1.05);
+            cat.x += sm.dx;
+            cat.y += sm.dy;
+            this.clampSpriteToPlaza(cat);
+
+            this.aimCatAt(cat, tcx, tcy);
+            if (this.bounceIfNearFountain(cat, now)) {
+              catEntry.chaseMouse = null;
+            }
+            this.clampSpriteToPlaza(cat);
+
+            if (chaseMouseSprite) {
+              const caught = Math.hypot(chaseMouseSprite.x - cat.x, chaseMouseSprite.y - cat.y);
+              if (caught < MOUSE_CATCH) {
+                const idx = this.mice.findIndex((mm) => mm.sprite === chaseMouseSprite);
+                if (idx >= 0) {
+                  this.mice[idx].sprite.destroy();
+                  this.mice.splice(idx, 1);
+                }
+                this.clearCatChaseOfMouse(chaseMouseSprite);
+              }
+            } else if (chaseSparrowEntry?.sprite?.active && chaseSparrowEntry.mode === "land") {
+              if (
+                Math.hypot(chaseSparrowEntry.sprite.x - cat.x, chaseSparrowEntry.sprite.y - cat.y) <
+                SPARROW_CATCH_DIST
+              ) {
+                this.resolveSparrowPredatorCatch(chaseSparrowEntry, now);
+              }
+            } else if (chaseLiz) {
+              const lsp = chaseLiz.sprite;
+              if (Math.hypot(lsp.x - cat.x, lsp.y - cat.y) < MOUSE_CATCH) {
+                if (this.arboreal && this.arboreal.liz === chaseLiz) this.arboreal = null;
+                lsp.destroy();
+                const idx = this.lizards.indexOf(chaseLiz);
+                if (idx >= 0) this.lizards.splice(idx, 1);
+              }
+            }
           }
         }
       }
 
-      if (this.catFishing) {
-        skipCatGround = true;
-        this.updateCatFishing(cat, now, dt);
-      }
 
       for (const lz of this.lizards) {
         if (this.arboreal && this.arboreal.liz === lz && !this.arboreal.lizardFled) {
@@ -4542,10 +6137,11 @@ function initWorld() {
         if (chaseRoach) {
           const tx = chaseRoach.sprite.x - lx;
           const ty = chaseRoach.sprite.y - ly;
-          const len = Math.hypot(tx, ty) || 1;
-          lx += (tx / len) * V_LIZARD_CHASE_ROACH * dt;
-          ly += (ty / len) * V_LIZARD_CHASE_ROACH * dt;
-          liz.setFlipX(tx > 0);
+          const sm = this.smoothSteer(lz, tx, ty, V_LIZARD_CHASE_ROACH * ANIMAL_SPEED_MULT, dt);
+          lx += sm.dx;
+          ly += sm.dy;
+          if (Math.abs(sm.vx) > 1.2) liz.setFlipX(sm.vx > 0);
+          else liz.setFlipX(tx > 0);
         } else if (!royale) {
           if (now > lz.retargetAt) {
             lz.retargetAt = now + 1600 + Math.random() * 1400;
@@ -4561,12 +6157,17 @@ function initWorld() {
             ty = lz.target.y - ly;
             len = Math.hypot(tx, ty) || 1;
           }
-          const vL = 34;
-          lx += (tx / len) * vL * dt;
-          ly += (ty / len) * vL * dt;
-          liz.setFlipX((lz.target.x - lx) < 0);
+          const vL = 34 * ANIMAL_SPEED_MULT;
+          const sm = this.smoothSteer(lz, tx, ty, vL, dt);
+          lx += sm.dx;
+          ly += sm.dy;
+          if (Math.abs(sm.vx) > 1.2) liz.setFlipX(sm.vx > 0);
+          else liz.setFlipX((lz.target.x - lx) < 0);
         }
 
+        const nearCatLiz = this.nearestCatEntry(lx, ly);
+        const cx0 = nearCatLiz ? nearCatLiz.sprite.x : lx;
+        const cy0 = nearCatLiz ? nearCatLiz.sprite.y : ly;
         let dx = lx - cx0;
         let dy = ly - cy0;
         let dist = Math.hypot(dx, dy) || 1;
@@ -4608,7 +6209,7 @@ function initWorld() {
         }
       }
 
-      const V_FROG = royale ? 19 * 1.22 : 19;
+      const V_FROG = (royale ? 19 * 1.22 : 19) * ANIMAL_SPEED_MULT;
       const fPS = this.plazaScale || 1;
       const FROG_HUNT_RANGE = royale ? Infinity : 112 * fPS;
       const FROG_EAT_DIST = 12 * fPS;
@@ -4707,12 +6308,21 @@ function initWorld() {
 
         let fdx = ftx - fx;
         let fdy = fty - fy;
-        let flen = Math.hypot(fdx, fdy) || 1;
-        fx += (fdx / flen) * V_FROG * dt;
-        fy += (fdy / flen) * V_FROG * dt;
+        {
+          const sm = this.smoothSteer(fr, fdx, fdy, V_FROG, dt, ANIMAL_STEER_ACCEL * 1.1);
+          fx += sm.dx;
+          fy += sm.dy;
+          fdx = sm.vx;
+          fdy = sm.vy;
+        }
+        {
+          const fled = this.applyFleeFromDog(fx, fy, now, dt);
+          fx = fled.x;
+          fy = fled.y;
+        }
         fp.setPosition(fx, fy);
         fp.setRotation(Math.atan2(fdy, fdx) * 0.08);
-        fp.setFlipX(fdx < 0);
+        this.applyAnimalFlip(fp, fr, fdx < 0);
         this.clampSpriteToPlaza(fp, true);
         if (!royale || preyX == null) this.clampFrogToPoolShore(fp);
         if (this.bounceIfNearFountain(fp, now)) {
@@ -4824,7 +6434,11 @@ function initWorld() {
           spr.setDepth(17.2);
           if (now > sv.retargetAt) {
             sv.retargetAt = now + 700 + Math.random() * 900;
-            if (!fleeing && this.roaches.length && Math.random() < (royale ? 1 : 0.28)) {
+            if (
+              !fleeing &&
+              (this.roaches.length || this.fallenApples?.some((a) => a.landed && !a.inWater)) &&
+              Math.random() < (royale ? 1 : 0.28)
+            ) {
               let bestRo = null;
               let bestRd = royale
                 ? SPARROW_ROACH_HUNT_RANGE * ROACH_ROYALE_PREDATOR_AGRO_MULT
@@ -4837,7 +6451,17 @@ function initWorld() {
                   bestRo = ro;
                 }
               }
-              if (bestRo) {
+              const flyApple = this.findNearestLandApple(
+                sx,
+                sy,
+                royale ? SPARROW_ROACH_HUNT_RANGE * ROACH_ROYALE_PREDATOR_AGRO_MULT : SPARROW_ROACH_HUNT_RANGE,
+              );
+              if (flyApple && (!bestRo || flyApple.dist < bestRd)) {
+                sv.mode = "land";
+                sv.landUntil = now + SPARROW_LAND_MIN_MS + Math.random() * 1800;
+                sv.target.x = flyApple.ap.sprite.x;
+                sv.target.y = flyApple.ap.sprite.y;
+              } else if (bestRo) {
                 sv.mode = "land";
                 sv.landUntil = now + SPARROW_LAND_MIN_MS + Math.random() * 1800;
                 sv.target.x = bestRo.sprite.x;
@@ -4853,7 +6477,9 @@ function initWorld() {
           spr.setTexture("sparrow");
           spr.setDepth(16.8);
           sv.beingChased =
-            Math.hypot(cx0 - sx, cy0 - sy) < SPARROW_PREDATOR_AGRO ||
+            this.activeCatEntries().some(
+              (ce) => Math.hypot(ce.sprite.x - sx, ce.sprite.y - sy) < SPARROW_PREDATOR_AGRO,
+            ) ||
             this.snakes.some(
               (snk) =>
                 snk.chasingSparrow === sv ||
@@ -4876,12 +6502,16 @@ function initWorld() {
           len = Math.hypot(tx, ty) || 1;
         }
 
-        const speed = flying ? SPARROW_FLY_SPEED : SPARROW_LAND_SPEED;
-        sx += (tx / len) * speed * dt;
-        sy += (ty / len) * speed * dt;
+        const speed = (flying ? SPARROW_FLY_SPEED : SPARROW_LAND_SPEED) * ANIMAL_SPEED_MULT;
+        {
+          const sm = this.smoothSteer(sv, tx, ty, speed, dt, flying ? ANIMAL_STEER_ACCEL * 1.35 : ANIMAL_STEER_ACCEL);
+          sx += sm.dx;
+          sy += sm.dy;
+        }
 
         if (!flying) {
           let chaseRo = null;
+          let chaseApple = null;
           let bestRd = royale
             ? SPARROW_ROACH_HUNT_RANGE * ROACH_ROYALE_PREDATOR_AGRO_MULT
             : SPARROW_ROACH_HUNT_RANGE;
@@ -4891,7 +6521,14 @@ function initWorld() {
             if (d < bestRd) {
               bestRd = d;
               chaseRo = ro;
+              chaseApple = null;
             }
+          }
+          const landApple = this.findNearestLandApple(sx, sy, bestRd);
+          if (landApple && landApple.dist < bestRd) {
+            chaseRo = null;
+            chaseApple = landApple;
+            bestRd = landApple.dist;
           }
           if (chaseRo) {
             tx = chaseRo.sprite.x - sx;
@@ -4908,6 +6545,13 @@ function initWorld() {
                 break;
               }
             }
+          } else if (chaseApple) {
+            tx = chaseApple.ap.sprite.x - sx;
+            ty = chaseApple.ap.sprite.y - sy;
+            len = Math.hypot(tx, ty) || 1;
+            sx += (tx / len) * (SPARROW_LAND_SPEED + 6) * dt;
+            sy += (ty / len) * (SPARROW_LAND_SPEED + 6) * dt;
+            if (this.tryEatLandApple(sx, sy, APPLE_EAT_DIST)) sv.landUntil = now + 400;
           }
         }
 
@@ -4927,79 +6571,10 @@ function initWorld() {
         }
       }
 
-      if (!skipCatGround) {
-        const chaseLiz = this.nearestLizardEntry(cat);
-        const chaseSparrowEntry = this.resolveCatSparrowChase(cat, chaseMouseSpriteEarly);
-
-        let chaseMx = null;
-        let chaseMy = null;
-        let chaseMouseSprite = chaseMouseSpriteEarly;
-        let vCat = 25;
-        if (chaseMouseSprite) {
-          chaseMx = chaseMouseSprite.x;
-          chaseMy = chaseMouseSprite.y;
-          vCat = 34;
-        } else if (chaseSparrowEntry) {
-          vCat = 32;
-        }
-
-        let tcx = cat.x;
-        let tcy = cat.y;
-        if (chaseMouseSprite) {
-          tcx = chaseMx;
-          tcy = chaseMy;
-        } else if (chaseSparrowEntry) {
-          tcx = chaseSparrowEntry.sprite.x;
-          tcy = chaseSparrowEntry.sprite.y;
-        } else if (chaseLiz) {
-          tcx = chaseLiz.sprite.x;
-          tcy = chaseLiz.sprite.y;
-        }
-
-        const cdx = tcx - cat.x;
-        const cdy = tcy - cat.y;
-        const cdist = Math.hypot(cdx, cdy) || 1;
-        if (cdist > 0.01) {
-          const step = Math.min(vCat * dt, cdist);
-          cat.x += (cdx / cdist) * step;
-          cat.y += (cdy / cdist) * step;
-        }
-        this.clampSpriteToPlaza(cat);
-
-        this.aimCatAt(cat, tcx, tcy);
-        if (this.bounceIfNearFountain(cat, now)) {
-          this.catChaseMouse = null;
-        }
-        this.clampSpriteToPlaza(cat);
-
-        if (chaseMouseSprite) {
-          const caught = Math.hypot(chaseMouseSprite.x - cat.x, chaseMouseSprite.y - cat.y);
-          if (caught < MOUSE_CATCH) {
-            const idx = this.mice.findIndex((mm) => mm.sprite === chaseMouseSprite);
-            if (idx >= 0) {
-              this.mice[idx].sprite.destroy();
-              this.mice.splice(idx, 1);
-            }
-            this.catChaseMouse = null;
-          }
-        } else if (chaseSparrowEntry?.sprite?.active && chaseSparrowEntry.mode === "land") {
-          if (
-            Math.hypot(chaseSparrowEntry.sprite.x - cat.x, chaseSparrowEntry.sprite.y - cat.y) <
-            SPARROW_CATCH_DIST
-          ) {
-            this.resolveSparrowPredatorCatch(chaseSparrowEntry, now);
-          }
-        } else if (chaseLiz) {
-          const lsp = chaseLiz.sprite;
-          if (Math.hypot(lsp.x - cat.x, lsp.y - cat.y) < MOUSE_CATCH) {
-            if (this.arboreal && this.arboreal.liz === chaseLiz) this.arboreal = null;
-            lsp.destroy();
-            const idx = this.lizards.indexOf(chaseLiz);
-            if (idx >= 0) this.lizards.splice(idx, 1);
-          }
-        }
-      }
-
+      this.updateChickens(now, dt);
+      this.updateSheep(now, dt);
+      this.updateWeasels(now, dt);
+      this.updateDog(now, dt);
 
       for (const npc of this.boothNpcs) {
         if (!npc?.active) continue;
@@ -5019,7 +6594,7 @@ function initWorld() {
       /* 核心广场尺寸（喷泉、路、分区）以 (0,0) 居中；外围再铺大地砖，缩到最小也不会露出背景色 */
       const TILE = 16;
       const ZOOM_MIN = PLAZA_ZOOM_SCENE_MIN;
-      /** 相对最初版广场的边长倍数（1.5 = 在原始尺寸上再扩大半倍） */
+      /** 相对最初版广场的边长倍数（1.5 = 在 PS=3 基础上缩小 2 倍） */
       const PS = 1.5;
       this.plazaScale = PS;
       this.fountainTeleportRadius = 34 * PS;
@@ -5066,7 +6641,8 @@ function initWorld() {
       cam.setBounds(-boundsHalfW, -boundsHalfH, boundsW, boundsH);
       /* 默认 70% 缩放，移动端友好视角 */
       cam.setZoom(DEFAULT_PLAZA_ZOOM);
-      cam.roundPixels = true;
+      // 亚像素位移，动物慢速走动更顺（贴图仍是像素风）
+      cam.roundPixels = false;
       cam.centerOn(0, 0);
       this._roachRoyaleCycleStartAt = this.time.now;
       this._roachRoyaleBanner = this.add
@@ -5099,6 +6675,27 @@ function initWorld() {
         g.fillStyle(0x7a6e62, 1).fillRect(0, 0, 16, 16);
         g.fillStyle(0x5c5249, 0.8).fillRect(0, 0, 16, 3);
         g.fillStyle(0x4a403a, 0.6).fillRect(2, 6, 12, 2);
+      });
+      // 草坪地砖（深浅两色交替）
+      makeTexture(this, "tileGrassA", 16, 16, (g) => {
+        g.fillStyle(0x3d6b42, 1).fillRect(0, 0, 16, 16);
+        g.fillStyle(0x4a8050, 1).fillRect(0, 0, 16, 3);
+        g.fillStyle(0x2f5536, 0.85).fillRect(0, 13, 16, 3);
+        g.fillStyle(0x5a9a58, 0.55).fillRect(2, 4, 1, 4);
+        g.fillRect(7, 6, 1, 5);
+        g.fillRect(12, 3, 1, 4);
+        g.fillStyle(0x6bb86a, 0.35).fillRect(4, 9, 1, 3);
+        g.fillRect(10, 11, 1, 2);
+      });
+      makeTexture(this, "tileGrassB", 16, 16, (g) => {
+        g.fillStyle(0x355d3a, 1).fillRect(0, 0, 16, 16);
+        g.fillStyle(0x3d6b42, 1).fillRect(0, 0, 16, 2);
+        g.fillStyle(0x2a4a30, 0.8).fillRect(0, 14, 16, 2);
+        g.fillStyle(0x4f8f4e, 0.5).fillRect(3, 5, 1, 5);
+        g.fillRect(9, 3, 1, 4);
+        g.fillRect(14, 7, 1, 3);
+        g.fillStyle(0x6bb86a, 0.3).fillRect(6, 10, 1, 3);
+        g.fillRect(1, 8, 1, 2);
       });
       // 喷泉石框（内池 24×24 透明，由 fountainWaterG 每帧绘制动态水）
       makeTexture(this, "fountainMasonry", 40, 40, (g) => {
@@ -5151,6 +6748,26 @@ function initWorld() {
         g.fillStyle(0x5a8a62, 0.35).fillRect(4, 2, 6, 3);
         g.fillRect(18, 1, 6, 3);
         g.fillRect(30, 2, 5, 3);
+      });
+      // 木栏杆：竖桩 + 两道横杆
+      makeTexture(this, "fenceRail", 28, 20, (g) => {
+        g.fillStyle(0x3a2e24, 0.4).fillRect(2, 17, 24, 2);
+        g.fillStyle(0x6b5340, 1).fillRect(2, 2, 3, 16);
+        g.fillRect(23, 2, 3, 16);
+        g.fillStyle(0x8a6a4c, 1).fillRect(2, 1, 3, 3);
+        g.fillRect(23, 1, 3, 3);
+        g.fillStyle(0x7a5c42, 1).fillRect(1, 5, 26, 3);
+        g.fillRect(1, 11, 26, 3);
+        g.fillStyle(0xa08060, 0.55).fillRect(2, 5, 24, 1);
+        g.fillRect(2, 11, 24, 1);
+        g.fillStyle(0x4a3828, 0.7).fillRect(2, 7, 24, 1);
+        g.fillRect(2, 13, 24, 1);
+      });
+      makeTexture(this, "fencePost", 8, 22, (g) => {
+        g.fillStyle(0x3a2e24, 0.4).fillRect(1, 19, 6, 2);
+        g.fillStyle(0x6b5340, 1).fillRect(2, 0, 4, 20);
+        g.fillStyle(0x8a6a4c, 1).fillRect(2, 0, 4, 3);
+        g.fillStyle(0xa08060, 0.5).fillRect(3, 1, 1, 16);
       });
       makeTexture(this, "flowerbed", 24, 16, (g) => {
         g.fillStyle(0x6b4a32, 1).fillRect(2, 8, 20, 8);
@@ -5267,11 +6884,24 @@ function initWorld() {
         g.fillRect(7, 7, 1, 1);
         g.fillStyle(0xd6a84f, 1).fillRect(18, 10, 4, 2);
       });
-// 小蜥蜴（在猫巡逻带附近溜达，被追时会加速甩开）
+      // 狗：棕毛、垂耳、短尾；比猫略大一圈，追猫/蛇/牛蛙
+      makeTexture(this, "dog", 28, 20, (g) => {
+        g.fillStyle(0x6b4423, 1).fillRect(8, 9, 14, 8);
+        g.fillStyle(0x8b5a2b, 1).fillRect(8, 9, 14, 5);
+        g.fillStyle(0x5a3818, 1).fillRect(2, 5, 10, 9);
+        g.fillStyle(0x4a2e12, 1).fillRect(1, 3, 4, 5);
+        g.fillRect(9, 3, 4, 5);
+        g.fillStyle(0x231c18, 1).fillRect(5, 8, 1, 1);
+        g.fillRect(9, 8, 1, 1);
+        g.fillStyle(0xc4a574, 1).fillRect(3, 11, 4, 2);
+        g.fillStyle(0x5a3818, 1).fillRect(22, 12, 5, 3);
+        g.fillStyle(0x3d2610, 1).fillRect(24, 11, 2, 2);
+      });
+// 小蜥蜴：浅色底 + setTint（绿 / 黄 / 白 / 橘）
       makeTexture(this, "lizard", 16, 10, (g) => {
-        g.fillStyle(0x4a8f5c, 1).fillRect(2, 4, 10, 5);
-        g.fillStyle(0x3d6b48, 1).fillRect(0, 5, 3, 3);
-        g.fillStyle(0x5ab070, 0.9).fillRect(4, 3, 6, 3);
+        g.fillStyle(0xf2f0ec, 1).fillRect(2, 4, 10, 5);
+        g.fillStyle(0xd8d4cc, 1).fillRect(0, 5, 3, 3);
+        g.fillStyle(0xffffff, 0.85).fillRect(4, 3, 6, 3);
         g.fillStyle(0x231c18, 1).fillRect(9, 4, 1, 1);
         g.fillStyle(0xc1666b, 0.85).fillRect(12, 5, 3, 2);
       });
@@ -5383,6 +7013,65 @@ function initWorld() {
         g.fillStyle(0x6a8090, 0.55).fillRect(3, 4.5, 1, 1);
         g.fillRect(5, 6.5, 1, 1);
       });
+      makeTexture(this, "apple", 12, 14, (g) => {
+        g.fillStyle(0x6b1010, 0.35).fillEllipse(6, 10, 8, 4);
+        g.fillStyle(0xc62828, 1).fillEllipse(6, 8, 9, 10);
+        g.fillStyle(0xe53935, 1).fillEllipse(5, 7, 5, 6);
+        g.fillStyle(0xff7043, 0.55).fillEllipse(4.5, 6, 2.5, 3);
+        g.fillStyle(0x2e7d32, 1).fillEllipse(8, 3.5, 4, 2.5);
+        g.fillStyle(0x43a047, 1).fillEllipse(9, 3, 3, 2);
+        g.fillStyle(0x5d4037, 1).fillRect(6, 1.5, 1.2, 2.5);
+      });
+      // 鸡：白羽、红冠、黄喙；地面啄食蟑螂
+      makeTexture(this, "chicken", 18, 14, (g) => {
+        g.fillStyle(0xf5f0e6, 1).fillEllipse(9, 8, 10, 7);
+        g.fillStyle(0xffffff, 1).fillEllipse(9, 7, 8, 5);
+        g.fillStyle(0xe8dcc8, 1).fillEllipse(4, 7, 4, 4);
+        g.fillStyle(0xc62828, 1).fillRect(12, 3, 2, 3);
+        g.fillRect(14, 4, 2, 2);
+        g.fillStyle(0xf4a900, 1).fillRect(15, 7, 3, 2);
+        g.fillStyle(0x231c18, 1).fillRect(13, 6, 1, 1);
+        g.fillStyle(0xf4a900, 0.9).fillRect(6, 11, 2, 2);
+        g.fillRect(10, 11, 2, 2);
+      });
+      makeTexture(this, "chickenEgg", 8, 10, (g) => {
+        g.fillStyle(0xfff8e8, 1).fillEllipse(4, 5.5, 3.6, 4.6);
+        g.fillStyle(0xf0e0c0, 1).fillEllipse(4, 5.5, 2.6, 3.4);
+        g.fillStyle(0xd4c4a0, 0.5).fillRect(3, 4, 1, 1);
+      });
+      // 羊：白毛、黑蹄、侧脸
+      makeTexture(this, "sheep", 22, 16, (g) => {
+        g.fillStyle(0x3a332d, 0.35).fillEllipse(11, 13, 14, 4);
+        g.fillStyle(0xf2efe8, 1).fillEllipse(11, 8, 14, 9);
+        g.fillStyle(0xffffff, 1).fillEllipse(11, 7, 11, 7);
+        g.fillStyle(0xe8e2d6, 1).fillEllipse(6, 6, 5, 5);
+        g.fillEllipse(16, 7, 4, 4);
+        g.fillStyle(0x2a2420, 1).fillEllipse(18, 7, 5, 5);
+        g.fillStyle(0x3d3630, 1).fillEllipse(19, 6.5, 3, 3);
+        g.fillStyle(0xf5f0e6, 0.9).fillEllipse(17.5, 6, 2, 2);
+        g.fillStyle(0x1a1816, 1).fillRect(19, 5.5, 1.2, 1.2);
+        g.fillStyle(0x2a2420, 1).fillRect(5, 12, 2.5, 3);
+        g.fillRect(9, 12.5, 2.5, 3);
+        g.fillRect(13, 12, 2.5, 3);
+        g.fillRect(16.5, 12.5, 2.2, 2.5);
+      });
+      // 黄鼠狼：細长黄褐身、尖吻
+      makeTexture(this, "weasel", 24, 12, (g) => {
+        g.fillStyle(0x3a2a18, 0.35).fillEllipse(12, 10, 16, 3);
+        g.fillStyle(0xc48a3a, 1).fillEllipse(11, 6, 16, 7);
+        g.fillStyle(0xd4a04a, 1).fillEllipse(11, 5.5, 12, 5);
+        g.fillStyle(0xe8c070, 0.7).fillEllipse(8, 5, 5, 3);
+        g.fillStyle(0xb87328, 1).fillEllipse(20, 5.5, 6, 5);
+        g.fillStyle(0xc48a3a, 1).fillEllipse(21, 5, 4, 3.5);
+        g.fillStyle(0x1a1816, 1).fillRect(22, 4, 1.2, 1.2);
+        g.fillStyle(0xf0d8a8, 0.85).fillEllipse(10, 7.5, 6, 3);
+        g.fillStyle(0x8a5a28, 1).fillRect(2, 5, 4, 2);
+        g.fillStyle(0xa86a30, 1).fillTriangle(1, 6, 3, 4.5, 3, 7.5);
+        g.fillStyle(0x5a3a18, 1).fillRect(5, 9, 2, 2);
+        g.fillRect(10, 9.5, 2, 2);
+        g.fillRect(14, 9, 2, 2);
+        g.fillRect(17, 9.5, 1.8, 1.8);
+      });
 
       const ground = this.add.graphics().setDepth(0);
       for (let y = -boundsHalfH; y < boundsHalfH; y += TILE) {
@@ -5410,6 +7099,95 @@ function initWorld() {
       zoneTint(283 * PS, -215 * PS, ztw, zth, 0xc1666b, 0.1); // AVATAR · 陶土
       zoneTint(-283 * PS, 225 * PS, ztw, zth, 0x4a8f5c, 0.09); // ARENA · 绿
       zoneTint(283 * PS, 225 * PS, ztw, zth, 0xd4963c, 0.11); // FORUM（自由发帖）· 金
+
+      /* —— 分区草坪：铺在瓷砖之上、主路之下，边缘略不规则；格子可被羊吃掉 —— */
+      this.lawnPatches = [];
+      this.fencePaddocks = [];
+      const paintLawn = (cx, cy, cols, rows, soft = 0.88) => {
+        const ox = cx - (cols * TILE) / 2;
+        const oy = cy - (rows * TILE) / 2;
+        const patch = { cx, cy, tiles: [], fenced: false };
+        for (let r = 0; r < rows; r++) {
+          for (let c = 0; c < cols; c++) {
+            const nx = (c + 0.5) / cols - 0.5;
+            const ny = (r + 0.5) / rows - 0.5;
+            const edge = nx * nx * 4 + ny * ny * 4;
+            if (edge > soft && ((c * 17 + r * 31 + Math.round(cx + cy)) % 5) !== 0) continue;
+            if (edge > soft + 0.18) continue;
+            const key = ((c + r) & 1) === 0 ? "tileGrassA" : "tileGrassB";
+            const gx = ox + c * TILE;
+            const gy = oy + r * TILE;
+            const sprite = this.add.image(gx, gy, key).setOrigin(0, 0).setDepth(1.15);
+            patch.tiles.push({
+              sprite,
+              cx: gx + TILE / 2,
+              cy: gy + TILE / 2,
+              grassKey: key,
+              eaten: false,
+              regrowAt: 0,
+            });
+          }
+        }
+        if (patch.tiles.length) this.lawnPatches.push(patch);
+        return patch;
+      };
+      // 四大草坪（四象限开阔处）
+      const fencedLawn = paintLawn(-210 * PS, -165 * PS, 11, 8, 0.9);
+      paintLawn(215 * PS, -160 * PS, 10, 8, 0.9);
+      paintLawn(-215 * PS, 175 * PS, 11, 8, 0.9);
+      paintLawn(210 * PS, 170 * PS, 10, 8, 0.9);
+      // 小路旁小草坪条带
+      paintLawn(-145 * PS, -72 * PS, 6, 4, 0.95);
+      paintLawn(150 * PS, 68 * PS, 6, 4, 0.95);
+      paintLawn(-70 * PS, 145 * PS, 5, 5, 0.92);
+      paintLawn(75 * PS, -140 * PS, 5, 5, 0.92);
+      // 靠外缘的碎草坪
+      paintLawn(-300 * PS, -40 * PS, 5, 6, 0.86);
+      paintLawn(305 * PS, 35 * PS, 5, 6, 0.86);
+
+      // 西北大草坪上的木栏杆（三面围栏，朝路开口）；内部禁入
+      {
+        const lawnCx = -210 * PS;
+        const lawnCy = -165 * PS;
+        const halfW = (11 * TILE) / 2;
+        const halfH = (8 * TILE) / 2;
+        const fenceDepth = 6.1;
+        const placeFenceH = (x, y) => {
+          this.add.image(x, y, "fenceRail").setOrigin(0.5, 1).setDepth(fenceDepth).setScale(1.05);
+        };
+        const placeFenceV = (x, y) => {
+          this.add
+            .image(x, y, "fenceRail")
+            .setOrigin(0.5, 1)
+            .setDepth(fenceDepth)
+            .setScale(1.05)
+            .setAngle(90);
+        };
+        const placePost = (x, y) => {
+          this.add.image(x, y, "fencePost").setOrigin(0.5, 1).setDepth(fenceDepth + 0.05).setScale(1.1);
+        };
+        for (let i = -2; i <= 2; i++) {
+          placeFenceH(lawnCx + i * 26, lawnCy - halfH + 6);
+        }
+        for (let i = -1; i <= 1; i++) {
+          placeFenceV(lawnCx - halfW + 8, lawnCy + i * 26);
+        }
+        for (let i = -1; i <= 1; i++) {
+          placeFenceV(lawnCx + halfW - 8, lawnCy + i * 26);
+        }
+        placePost(lawnCx - halfW + 6, lawnCy - halfH + 8);
+        placePost(lawnCx + halfW - 6, lawnCy - halfH + 8);
+        placePost(lawnCx - halfW + 6, lawnCy + halfH - 10);
+        placePost(lawnCx + halfW - 6, lawnCy + halfH - 10);
+
+        if (fencedLawn) fencedLawn.fenced = true;
+        this.fencePaddocks.push({
+          minX: lawnCx - halfW + 2,
+          maxX: lawnCx + halfW - 2,
+          minY: lawnCy - halfH + 2,
+          maxY: lawnCy + halfH - 2,
+        });
+      }
 
       /* —— 十字主路 + 喷泉环岛感 —— */
       const roadAsp = 0x2c2622;
@@ -5523,7 +7301,7 @@ function initWorld() {
         return t;
       };
 
-      // 沿路林带 + 四角密林
+      // 沿路林带 + 四角密林（再 ×3 → 相对最初共 ×9）
       const borderTrees = [
         [-hw + 40 * PS, -120 * PS, "treePine", 1],
         [-hw + 28 * PS, -40 * PS, "treeOak", 1.05],
@@ -5541,9 +7319,21 @@ function initWorld() {
         [8 * PS, hh - 46 * PS, "treeAutumn", 1.02],
         [248 * PS, hh - 50 * PS, "treeOak", 1],
       ];
-      for (const [x, y, k, s] of borderTrees) placeTree(x, y, k, s, (x + y) % 2 === 0);
+      const TREE_MULT = 9;
+      for (const [x, y, k, s] of borderTrees) {
+        for (let m = 0; m < TREE_MULT; m++) {
+          const ring = Math.floor(m / 3);
+          const slot = m % 3;
+          const ang = (slot / 3) * Math.PI * 2 + ring * 0.7;
+          const rad = ring * 28 * PS + (slot === 0 && ring === 0 ? 0 : 18 * PS);
+          const ox = Math.cos(ang) * rad;
+          const oy = Math.sin(ang) * rad;
+          const sc = s * (1 - Math.min(0.28, m * 0.02));
+          placeTree(x + ox, y + oy, k, sc, ((x + y) / PS + m) % 2 === 0);
+        }
+      }
 
-      // 集群小树丛
+      // 集群小树丛（再 ×3 → 相对最初共 ×9）
       const clusters = [
         [-320 * PS, -220 * PS, 1],
         [300 * PS, -210 * PS, -1],
@@ -5554,14 +7344,36 @@ function initWorld() {
         [-135 * PS, 252 * PS, 1],
         [118 * PS, 248 * PS, -1],
       ];
-      for (const [cx, cy, dir] of clusters) {
-        placeTree(cx, cy, treeKeys[Math.abs(cx + cy) % 4], 0.92, dir < 0);
-        placeTree(cx + 18 * PS * dir, cy + 10 * PS, "treePine", 0.85, dir > 0);
-        this.add
-          .image(cx - 14 * PS * dir, cy - 8 * PS, "bush")
-          .setOrigin(0.5)
-          .setScale(1.15)
-          .setDepth(depthScenery);
+      for (const [cx0, cy0, dir] of clusters) {
+        for (let m = 0; m < TREE_MULT; m++) {
+          const ring = Math.floor(m / 3);
+          const slot = m % 3;
+          const ang = (slot / 3) * Math.PI * 2 + ring * 0.55;
+          const rad = ring * 32 * PS + (m === 0 ? 0 : 22 * PS);
+          const cx = cx0 + Math.cos(ang) * rad * dir;
+          const cy = cy0 + Math.sin(ang) * rad;
+          placeTree(
+            cx,
+            cy,
+            treeKeys[Math.abs(Math.round(cx + cy + m * 17)) % 4],
+            0.92 - Math.min(0.2, m * 0.015),
+            dir < 0,
+          );
+          placeTree(
+            cx + 18 * PS * dir,
+            cy + 10 * PS,
+            "treePine",
+            0.85 - Math.min(0.15, m * 0.012),
+            dir > 0,
+          );
+          if (m === 0) {
+            this.add
+              .image(cx - 14 * PS * dir, cy - 8 * PS, "bush")
+              .setOrigin(0.5)
+              .setScale(1.15)
+              .setDepth(depthScenery);
+          }
+        }
       }
 
       // 灌木与石块点缀（避开环岛）
@@ -5660,7 +7472,29 @@ function initWorld() {
           .setDepth(depthScenery + 2);
       });
 
-      this.cat = this.add.image(-118 * PS, 88 * PS, "cat").setOrigin(0.5).setDepth(15).setScale(1.18);
+      this.cats = [];
+      const catSpawns = [
+        [-118 * PS, 88 * PS],
+        [96 * PS, 100 * PS],
+      ];
+      for (let ci = 0; ci < CAT_COUNT; ci++) {
+        const [cx, cy] = catSpawns[ci] || [
+          (ci % 2 === 0 ? -1 : 1) * (90 + ci * 20) * PS,
+          (80 + (ci % 3) * 12) * PS,
+        ];
+        const pos = this.clampPosToPlaza(cx, cy);
+        const ce = this.createCatAt(pos.x, pos.y);
+        ce.nextFishAt = this.time.now + CAT_FISH_INTERVAL_MS + ci * 8000;
+        this.cats.push(ce);
+      }
+      this.syncPrimaryCat();
+      {
+        const dogPos = this.clampPosToPlaza(96 * PS, -72 * PS);
+        this.dog = this.createDogAt(dogPos.x, dogPos.y);
+        this.pickDogTarget(this.dog);
+        this.dog.retargetAt = this.time.now + 600;
+        this.dog.nextChickenChaseAt = this.time.now + DOG_CHICKEN_CHASE_INTERVAL_MS;
+      }
       const lizardSpawns = [
         [-72 * PS, 82 * PS],
         [-58 * PS, 94 * PS],
@@ -5671,12 +7505,8 @@ function initWorld() {
       this.lizards = [];
       for (let i = 0; i < lizardSpawns.length; i++) {
         const [x, y] = lizardSpawns[i];
-        const lz = {
-          sprite: this.add.image(x, y, "lizard").setOrigin(0.5).setDepth(16),
-          home: { x, y },
-          target: { x, y },
-          retargetAt: this.time.now + 800 + i * 220,
-        };
+        const lz = this.createLizardAt(x, y);
+        lz.retargetAt = this.time.now + 800 + i * 220;
         this.lizards.push(lz);
         this.pickLizardTarget(lz);
       }
@@ -5761,6 +7591,56 @@ function initWorld() {
       }
       this._nextSparrowEggLayAt = this.time.now + 12000;
 
+      this.chickens = [];
+      this.chickenEggs = [];
+      const chickenSpawns = [
+        [-150 * PS, 40 * PS],
+        [-100 * PS, -50 * PS],
+        [40 * PS, 60 * PS],
+        [130 * PS, -20 * PS],
+        [70 * PS, 110 * PS],
+      ];
+      for (let ci = 0; ci < chickenSpawns.length && this.chickens.length < MAX_CHICKENS; ci++) {
+        const [cx, cy] = chickenSpawns[ci];
+        const cc = this.clampPosToPlaza(cx, cy);
+        const ch = this.createChickenAt(cc.x, cc.y);
+        this.pickChickenTarget(ch);
+        ch.retargetAt = this.time.now + ci * 200;
+        this.chickens.push(ch);
+      }
+      this._nextChickenLayAt = this.time.now + 18000;
+
+      this.sheep = [];
+      const sheepSpawns = [
+        [-160 * PS, -100 * PS],
+        [200 * PS, 155 * PS],
+      ];
+      for (let si = 0; si < SHEEP_COUNT && si < sheepSpawns.length; si++) {
+        const [sx, sy] = sheepSpawns[si];
+        const sc = this.clampPosToPlaza(sx, sy);
+        const sh = this.createSheepAt(sc.x, sc.y);
+        this.pickSheepWanderTarget(sh);
+        sh.retargetAt = this.time.now + si * 400;
+        this.sheep.push(sh);
+      }
+
+      this.weasels = [];
+      const weaselSpawns = [
+        [180 * PS, -90 * PS],
+        [-90 * PS, 160 * PS],
+      ];
+      for (let wi = 0; wi < WEASEL_COUNT && wi < weaselSpawns.length; wi++) {
+        const [wx, wy] = weaselSpawns[wi];
+        const wc = this.clampPosToPlaza(wx, wy);
+        const w = this.createWeaselAt(wc.x, wc.y);
+        this.pickWeaselTarget(w);
+        w.retargetAt = this.time.now + wi * 350;
+        this.weasels.push(w);
+      }
+
+      this.fallenApples = [];
+      this._nextAppleDropAt = this.time.now + 3000 + Math.random() * 5000;
+
       // Zone titles sit above plaza tiles / trees (6) but below booths (7+) so stalls are never covered.
       const depthZoneTitle = 6.4;
       const mkLabel = (x, y, text, subHue) =>
@@ -5820,6 +7700,7 @@ function initWorld() {
         this._pinchBaseline = null;
 
         if (nDown !== 1) return;
+        if (this._draggingFenceAnimal) return;
         const q = pts[0];
         c.scrollX -= (q.x - q.prevPosition.x) / c.zoom;
         c.scrollY -= (q.y - q.prevPosition.y) / c.zoom;
@@ -5831,6 +7712,12 @@ function initWorld() {
             ? this.input.manager.pointers.filter((pt) => pt && pt.isDown)
             : [];
         if (pts.length < 2) this._pinchBaseline = null;
+      });
+
+      this.input.on("pointerdown", (_pointer, currentlyOver) => {
+        if (!this.dogSelectArmed) return;
+        if (currentlyOver && currentlyOver.length) return;
+        this.setDogSelectArmed(false);
       });
 
       this.refreshBooths(state.posts, state.matches, state.polls, state.spyGames, state.stallZoneFilter);
@@ -6243,7 +8130,7 @@ function initWorld() {
     render: {
       pixelArt: true,
       antialias: false,
-      roundPixels: true,
+      roundPixels: false,
     },
   };
 
@@ -6487,7 +8374,7 @@ window.addEventListener("DOMContentLoaded", async () => {
       roachRoyaleDuration.textContent = `${ui.durationMin} 分钟`;
     }
     if (roachRoyaleCycle) {
-      roachRoyaleCycle.textContent = `${ui.cycleMin} 分钟`;
+      roachRoyaleCycle.textContent = `${ui.cycleDays} 天`;
     }
     if (roachRoyaleHint) {
       roachRoyaleHint.textContent = ui.active
