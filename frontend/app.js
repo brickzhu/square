@@ -1152,7 +1152,7 @@ function initWorld() {
   const SHEEP_EAT_DIST = 9;
   const SHEEP_EAT_COOLDOWN_MS = 480;
   const SHEEP_GRASS_REGROW_MS = 300_000;
-  /** 黄鼠狼：2 只；吃鸡；吃鸡时狗追但不杀；进不了栏杆 */
+  /** 黄鼠狼：2 只；吃鸡（此时狗追但不杀）；追老鼠并吃掉（狗不追）；进不了栏杆 */
   const WEASEL_COUNT = 2;
   const WEASEL_SPEED = 28;
   const WEASEL_HUNT_RANGE = 130;
@@ -1365,7 +1365,7 @@ function initWorld() {
       this.weasels = [];
       /** 狗：追猫/蛇/牛蛙；休息时游荡 */
       this.dog = null;
-      /** 点击狗后进入「点选猎物」模式，再点老鼠/蜥蜴/蟑螂即可吃掉 */
+      /** 点击狗后进入「点选猎物」模式：再点老鼠/蜥蜴/蟑螂则吃掉；点鸡则追赶，满 5 次后鸡死 */
       this.dogSelectArmed = false;
       /** 蟑螂大逃杀周期与战果 */
       this._roachRoyaleCycleStartAt = 0;
@@ -4009,10 +4009,18 @@ function initWorld() {
     dogAssignCommandPrey(kind, sprite) {
       const dog = this.dog;
       if (!dog?.sprite?.active || !sprite?.active) return;
-      if (!["mouse", "lizard", "roach"].includes(kind)) return;
+      if (!["mouse", "lizard", "roach", "chicken"].includes(kind)) return;
+      if (kind === "chicken") {
+        const ch = this.chickens.find((c) => c.sprite === sprite && c.sprite?.active);
+        if (!ch || ch.penned || ch.dragging) return;
+      }
       dog.commandPrey = { kind, sprite };
       dog.restUntil = 0;
       dog.huntStartedAt = 0;
+      if (kind === "chicken") {
+        dog.chaseWeasel = null;
+        dog.chaseChicken = null;
+      }
       this.setDogSelectArmed(false);
     }
 
@@ -4040,6 +4048,12 @@ function initWorld() {
         if (idx < 0) return false;
         return this.removeRoachAt(idx, now);
       }
+      if (kind === "chicken") {
+        const ch = this.chickens.find((c) => c.sprite === sprite);
+        if (!ch) return false;
+        this.onDogCaughtChicken(ch, now);
+        return true;
+      }
       return false;
     }
 
@@ -4054,6 +4068,10 @@ function initWorld() {
       if (kind === "mouse") alive = this.mice.some((m) => m.sprite === sprite);
       else if (kind === "lizard") alive = this.lizards.some((lz) => lz.sprite === sprite);
       else if (kind === "roach") alive = this.roaches.some((ro) => ro.sprite === sprite);
+      else if (kind === "chicken") {
+        const ch = this.chickens.find((c) => c.sprite === sprite);
+        alive = !!(ch && ch.sprite?.active && !ch.penned && !ch.dragging);
+      }
       if (!alive) {
         dog.commandPrey = null;
         return null;
@@ -4180,6 +4198,13 @@ function initWorld() {
       const idx = this.chickens.indexOf(ch);
       if (idx < 0) return;
       if (this.dog?.chaseChicken === ch) this.dog.chaseChicken = null;
+      if (this.dog?.commandPrey?.sprite === ch.sprite) this.dog.commandPrey = null;
+      for (const w of this.weasels || []) {
+        if (w.chaseChicken === ch) {
+          w.chaseChicken = null;
+          w.huntingChicken = false;
+        }
+      }
       ch.sprite?.destroy();
       this.chickens.splice(idx, 1);
     }
@@ -4231,7 +4256,19 @@ function initWorld() {
       if (!sprite) return;
       sprite.setInteractive({ useHandCursor: true });
       this.input.setDraggable(sprite);
+      sprite.on("pointerdown", (pointer) => {
+        if (!this.dogSelectArmed) return;
+        if (sprite.texture?.key !== "chicken") return;
+        if (pointer?.event?.stopPropagation) pointer.event.stopPropagation();
+        this.dogAssignCommandPrey("chicken", sprite);
+      });
       sprite.on("dragstart", (pointer) => {
+        if (this.dogSelectArmed) {
+          body.dragging = false;
+          sprite._dragging = false;
+          this._draggingFenceAnimal = false;
+          return;
+        }
         if (pointer?.event?.stopPropagation) pointer.event.stopPropagation();
         body.dragging = true;
         sprite._dragging = true;
@@ -4241,12 +4278,18 @@ function initWorld() {
         body.vy = 0;
       });
       sprite.on("drag", (_pointer, dragX, dragY) => {
+        if (this.dogSelectArmed || !body.dragging) return;
         sprite.setPosition(dragX, dragY);
         // 拖拽时避开水池，但不强制进出栏杆
         const p = this.clampPosToPlaza(dragX, dragY, sprite, false);
         sprite.setPosition(p.x, p.y);
       });
       sprite.on("dragend", () => {
+        if (!body.dragging) {
+          sprite._dragging = false;
+          this._draggingFenceAnimal = false;
+          return;
+        }
         body.dragging = false;
         sprite._dragging = false;
         this._draggingFenceAnimal = false;
@@ -4438,6 +4481,7 @@ function initWorld() {
         target: { x, y },
         retargetAt: 0,
         chaseChicken: null,
+        chaseMouse: null,
         huntingChicken: false,
         fleeUntil: 0,
         vx: 0,
@@ -4457,6 +4501,31 @@ function initWorld() {
         }
       }
       return best ? { chicken: best, dist: bestD } : null;
+    }
+
+    findWeaselMousePrey(wx, wy) {
+      let best = null;
+      let bestD = WEASEL_HUNT_RANGE;
+      for (const m of this.mice || []) {
+        if (!m.sprite?.active) continue;
+        const d = Math.hypot(m.sprite.x - wx, m.sprite.y - wy);
+        if (d < bestD) {
+          bestD = d;
+          best = m;
+        }
+      }
+      return best ? { mouse: best, dist: bestD } : null;
+    }
+
+    weaselEatMouse(m, now) {
+      if (!m?.sprite?.active) return false;
+      const idx = this.mice.indexOf(m);
+      if (idx < 0) return false;
+      if (this.dog?.commandPrey?.sprite === m.sprite) this.dog.commandPrey = null;
+      this.clearCatChaseOfMouse(m.sprite);
+      m.sprite.destroy();
+      this.mice.splice(idx, 1);
+      return true;
     }
 
     nearestWeaselThreat(x, y, maxDist = CHICKEN_FLEE_WEASEL_RANGE) {
@@ -4517,6 +4586,7 @@ function initWorld() {
     onDogCaughtWeasel(w, now) {
       if (!w?.sprite?.active) return;
       w.chaseChicken = null;
+      w.chaseMouse = null;
       w.huntingChicken = false;
       w.fleeUntil = now + WEASEL_FLEE_AFTER_DOG_MS;
       w.vx = 0;
@@ -4536,6 +4606,7 @@ function initWorld() {
 
         if (fleeing && dogSp?.active) {
           w.chaseChicken = null;
+          w.chaseMouse = null;
           w.huntingChicken = false;
           const dx = x - dogSp.x;
           const dy = y - dogSp.y;
@@ -4544,13 +4615,13 @@ function initWorld() {
           y += sm.dy;
           if (Math.abs(sm.vx) > 1.2) sp.setFlipX(sm.vx < 0);
         } else {
-          let prey = null;
+          let chickenPrey = null;
           if (w.chaseChicken) {
             const alive =
               this.chickens.find((c) => c === w.chaseChicken && c.sprite?.active && !c.penned && !c.dragging) ||
               null;
             if (alive) {
-              prey = {
+              chickenPrey = {
                 chicken: alive,
                 dist: Math.hypot(alive.sprite.x - x, alive.sprite.y - y),
               };
@@ -4558,29 +4629,67 @@ function initWorld() {
               w.chaseChicken = null;
             }
           }
-          if (!prey) {
-            prey = this.findWeaselChickenPrey(x, y);
-            if (prey) w.chaseChicken = prey.chicken;
+          if (!chickenPrey) {
+            chickenPrey = this.findWeaselChickenPrey(x, y);
+            if (chickenPrey) w.chaseChicken = chickenPrey.chicken;
           }
 
-          if (prey) {
+          let mousePrey = null;
+          if (w.chaseMouse) {
+            const alive = this.mice.find((mm) => mm === w.chaseMouse && mm.sprite?.active) || null;
+            if (alive) {
+              mousePrey = {
+                mouse: alive,
+                dist: Math.hypot(alive.sprite.x - x, alive.sprite.y - y),
+              };
+            } else {
+              w.chaseMouse = null;
+            }
+          }
+          if (!mousePrey) {
+            mousePrey = this.findWeaselMousePrey(x, y);
+            if (mousePrey) w.chaseMouse = mousePrey.mouse;
+          }
+
+          const huntChicken =
+            !!chickenPrey && (!mousePrey || chickenPrey.dist <= mousePrey.dist);
+          const huntMouse = !!mousePrey && !huntChicken;
+
+          if (huntChicken) {
             w.huntingChicken = true;
-            const tx = prey.chicken.sprite.x - x;
-            const ty = prey.chicken.sprite.y - y;
+            w.chaseMouse = null;
+            const tx = chickenPrey.chicken.sprite.x - x;
+            const ty = chickenPrey.chicken.sprite.y - y;
             const sm = this.smoothSteer(w, tx, ty, WEASEL_SPEED * 1.15 * ANIMAL_SPEED_MULT, dt);
             x += sm.dx;
             y += sm.dy;
             if (Math.abs(sm.vx) > 1.2) sp.setFlipX(sm.vx < 0);
-            if (prey.dist < WEASEL_EAT_DIST) {
-              this.killChicken(prey.chicken, now);
+            if (chickenPrey.dist < WEASEL_EAT_DIST) {
+              this.killChicken(chickenPrey.chicken, now);
               w.chaseChicken = null;
               w.huntingChicken = false;
               w.retargetAt = now + 800;
               this.pickWeaselTarget(w);
             }
+          } else if (huntMouse) {
+            w.huntingChicken = false;
+            w.chaseChicken = null;
+            const tx = mousePrey.mouse.sprite.x - x;
+            const ty = mousePrey.mouse.sprite.y - y;
+            const sm = this.smoothSteer(w, tx, ty, WEASEL_SPEED * 1.12 * ANIMAL_SPEED_MULT, dt);
+            x += sm.dx;
+            y += sm.dy;
+            if (Math.abs(sm.vx) > 1.2) sp.setFlipX(sm.vx < 0);
+            if (mousePrey.dist < WEASEL_EAT_DIST) {
+              this.weaselEatMouse(mousePrey.mouse, now);
+              w.chaseMouse = null;
+              w.retargetAt = now + 600;
+              this.pickWeaselTarget(w);
+            }
           } else {
             w.huntingChicken = false;
             w.chaseChicken = null;
+            w.chaseMouse = null;
             if (now > w.retargetAt) {
               w.retargetAt = now + 1600 + Math.random() * 1400;
               this.pickWeaselTarget(w);
@@ -4711,7 +4820,9 @@ function initWorld() {
         const sp = ch.sprite;
         let x = sp.x;
         let y = sp.y;
-        const fleeingDog = !ch.penned && chasing === ch && dogSp?.active;
+        const cmdChicken =
+          dog?.commandPrey?.kind === "chicken" && dog.commandPrey.sprite === ch.sprite;
+        const fleeingDog = !ch.penned && dogSp?.active && (chasing === ch || cmdChicken);
         const weaselThreat =
           !ch.penned && !fleeingDog ? this.nearestWeaselThreat(x, y, CHICKEN_FLEE_WEASEL_RANGE) : null;
 
@@ -4830,9 +4941,13 @@ function initWorld() {
         this.applyAnimalFlip(sp, dog, tx > 0 ? false : true);
         if (Math.abs(sm.vx) > 1.2) sp.setFlipX(sm.vx > 0);
         const catchD = Math.hypot(cmdPrey.x - x, cmdPrey.y - y);
-        if (catchD < DOG_CATCH_DIST) {
+        if (catchD < (cmdPrey.kind === "chicken" ? DOG_CHICKEN_CATCH_DIST : DOG_CATCH_DIST)) {
           this.dogConsumePrey(cmdPrey.kind, cmdPrey.sprite, now);
           dog.commandPrey = null;
+          if (cmdPrey.kind === "chicken") {
+            dog.chaseKind = null;
+            dog.restUntil = Math.max(dog.restUntil || 0, now + 2500);
+          }
         }
       } else {
         const weaselChase = this.resolveDogWeaselChase(dog, now);
@@ -5456,6 +5571,15 @@ function initWorld() {
             const mf = (mousePanic ? 72 : 58) * dt;
             mx -= (mdx / mdist) * mf;
             my -= (mdy / mdist) * mf;
+          }
+          const weaselNear = this.nearestWeaselThreat(mx, my, 58);
+          if (weaselNear) {
+            const wdx = mx - weaselNear.weasel.sprite.x;
+            const wdy = my - weaselNear.weasel.sprite.y;
+            const wd = Math.hypot(wdx, wdy) || 1;
+            const wf = 62 * dt;
+            mx += (wdx / wd) * wf;
+            my += (wdy / wd) * wf;
           }
         }
 
