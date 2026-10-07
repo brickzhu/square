@@ -65,6 +65,29 @@
               </div>
             </div>
             <div class="world__wrap">
+              <aside class="plaza-rank" aria-label="动物强弱排行榜">
+                <div class="plaza-rank__title">强弱榜</div>
+                <ol class="plaza-rank__list">
+                  <li>狗</li>
+                  <li>猫</li>
+                  <li>蛇</li>
+                  <li>黄鼠狼</li>
+                  <li>牛蛙</li>
+                  <li>羊</li>
+                  <li>小龙虾</li>
+                  <li>蜥蜴</li>
+                  <li>鸡</li>
+                  <li>麻雀</li>
+                  <li>老鼠</li>
+                  <li>蚂蚁</li>
+                  <li>蟑螂</li>
+                  <li>小鱼</li>
+                </ol>
+              </aside>
+              <div id="plazaAchToast" class="plaza-ach-toast hidden" aria-live="polite">
+                <div class="plaza-ach-toast__kicker">成就解锁</div>
+                <div class="plaza-ach-toast__title" id="plazaAchToastTitle"></div>
+              </div>
               <div id="world" class="world__canvas"></div>
             </div>
           </section>
@@ -140,6 +163,52 @@
               </p>
             </section>
 
+            <section
+              class="ant-warehouse card"
+              id="antWarehousePanel"
+              aria-live="polite"
+              title="点击查看搬入记录；地图井盖也可打开"
+            >
+              <div class="card__head">
+                <div class="card__title">蚂蚁仓库</div>
+                <span class="ant-warehouse__badge" id="antWarehouseBadge">共用</span>
+              </div>
+              <dl class="ant-warehouse__stats">
+                <div class="ant-warehouse__stat">
+                  <dt>苹果</dt>
+                  <dd id="antWarehouseApples">0</dd>
+                </div>
+                <div class="ant-warehouse__stat">
+                  <dt>龙虾尸体</dt>
+                  <dd id="antWarehouseShrimp">0</dd>
+                </div>
+                <div class="ant-warehouse__stat">
+                  <dt>鱼卵</dt>
+                  <dd id="antWarehouseEggs">0</dd>
+                </div>
+                <div class="ant-warehouse__stat">
+                  <dt>入仓蚁</dt>
+                  <dd id="antWarehouseAnts">0</dd>
+                </div>
+                <div class="ant-warehouse__stat">
+                  <dt>抢食蟑</dt>
+                  <dd id="antWarehouseRoaches">0</dd>
+                </div>
+              </dl>
+              <p class="ant-warehouse__hint" id="antWarehouseHint">
+                蚂蚁把食物搬进井盖；抢食的蟑螂会被拖入井盖。点击本卡片或地图井盖可看记录。
+              </p>
+            </section>
+
+            <section class="plaza-ach card" id="plazaAchPanel" aria-live="polite">
+              <div class="card__head">
+                <div class="card__title">成就</div>
+                <span class="plaza-ach__badge" id="plazaAchBadge">0 / 5</span>
+              </div>
+              <ul class="plaza-ach__list" id="plazaAchList"></ul>
+              <p class="plaza-ach__foot">解锁后会在地图左上角弹出 10 秒。</p>
+            </section>
+
             <div id="drawer" class="drawer drawer--rail hidden">
               <div class="drawer__top">
                 <div id="drawerTitle" class="drawer__title">作品</div>
@@ -203,7 +272,7 @@
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/phaser@3.80.1/dist/phaser.min.js"></script>
-    <link rel="stylesheet" href="/static/styles.css?v=20260620royale" />
-    <script src="/static/app.js?v=20261002weasel2"></script>
+    <link rel="stylesheet" href="/static/styles.css?v=20261006ach1" />
+    <script src="/static/app.js?v=20261006ach4"></script>
   </body>
 </html>

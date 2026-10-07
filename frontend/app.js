@@ -1,4 +1,78 @@
 const UID_STORAGE_KEY = "square_user_id";
+const PLAZA_ACH_STORAGE_KEY = "plaza_achievements_v1";
+const PLAZA_ACHIEVEMENTS = [
+  { id: "bruce", title: "我的布鲁斯", hint: "第一次操控狗吃掉一只动物" },
+  { id: "fly", title: "飞起来", hint: "把动物拖到喷泉上" },
+  { id: "taunt", title: "你过来呀", hint: "把鸡拖进围栏" },
+  { id: "leteat", title: "让你吃", hint: "把羊拖进围栏，让它把里面的草吃完" },
+  { id: "egghief", title: "偷蛋贼", hint: "龙虾正在扯蛋时把它拖走" },
+];
+
+function loadPlazaAchievements() {
+  try {
+    const raw = localStorage.getItem(PLAZA_ACH_STORAGE_KEY);
+    const parsed = raw ? JSON.parse(raw) : {};
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function savePlazaAchievements(map) {
+  try {
+    localStorage.setItem(PLAZA_ACH_STORAGE_KEY, JSON.stringify(map || {}));
+  } catch {
+    /* noop */
+  }
+}
+
+function renderPlazaAchievementSidebar() {
+  const list = document.getElementById("plazaAchList");
+  const badge = document.getElementById("plazaAchBadge");
+  if (!list) return;
+  const got = loadPlazaAchievements();
+  const unlocked = PLAZA_ACHIEVEMENTS.filter((a) => got[a.id]).length;
+  if (badge) badge.textContent = `${unlocked} / ${PLAZA_ACHIEVEMENTS.length}`;
+  list.innerHTML = "";
+  for (const a of PLAZA_ACHIEVEMENTS) {
+    const li = document.createElement("li");
+    li.className = "plaza-ach__item" + (got[a.id] ? " is-unlocked" : "");
+    const title = document.createElement("div");
+    title.className = "plaza-ach__name";
+    title.textContent = got[a.id] ? a.title : "未获得";
+    const hint = document.createElement("div");
+    hint.className = "plaza-ach__hint";
+    hint.textContent = a.hint;
+    li.appendChild(title);
+    li.appendChild(hint);
+    list.appendChild(li);
+  }
+}
+
+let plazaAchToastTimer = 0;
+function showPlazaAchievementToast(title) {
+  const toast = document.getElementById("plazaAchToast");
+  const name = document.getElementById("plazaAchToastTitle");
+  if (!toast || !name) return;
+  name.textContent = title;
+  toast.classList.remove("hidden");
+  window.clearTimeout(plazaAchToastTimer);
+  plazaAchToastTimer = window.setTimeout(() => {
+    toast.classList.add("hidden");
+  }, 10000);
+}
+
+function unlockPlazaAchievement(id) {
+  const spec = PLAZA_ACHIEVEMENTS.find((a) => a.id === id);
+  if (!spec) return false;
+  const got = loadPlazaAchievements();
+  if (got[id]) return false;
+  got[id] = Date.now();
+  savePlazaAchievements(got);
+  showPlazaAchievementToast(spec.title);
+  renderPlazaAchievementSidebar();
+  return true;
+}
 
 function getSquareUserId() {
   try {
@@ -160,6 +234,66 @@ function setDrawerMode(mode) {
   document.querySelectorAll("[data-drawer-poll-only]").forEach((el) => {
     el.classList.toggle("hidden", mode !== "poll");
   });
+}
+
+/** 点击任意井盖：查看全广场唯一的蚂蚁仓库 */
+function openAntWarehouseDrawer() {
+  const wh = sceneRef?.antWarehouse || {
+    appleCount: 0,
+    shrimpCount: 0,
+    fishEggCount: 0,
+    antCount: 0,
+    roachCount: 0,
+    haulLog: [],
+  };
+  selectedPost = null;
+  selectedPostId = null;
+  selectedMatch = null;
+  selectedPollId = null;
+  setDrawerMode("manhole");
+
+  const drawer = document.getElementById("drawer");
+  drawer.classList.remove("hidden");
+  document.getElementById("drawerTitle").textContent = "蚂蚁仓库";
+
+  const appleN = wh.appleCount || 0;
+  const shrimpN = wh.shrimpCount || 0;
+  const eggN = wh.fishEggCount || 0;
+  const antN = wh.antCount || 0;
+  const meta = document.getElementById("drawerMeta");
+  meta.innerHTML = "";
+  meta.appendChild(pill("全广场共用"));
+  meta.appendChild(pill(`苹果 ×${appleN}`));
+  meta.appendChild(pill(`龙虾尸体 ×${shrimpN}`));
+  meta.appendChild(pill(`鱼卵 ×${eggN}`));
+  meta.appendChild(pill(`入仓蚁 ×${antN}`));
+  meta.appendChild(pill(`抢食蟑 ×${wh.roachCount || 0}`));
+  meta.appendChild(pill(`食物合计 ${appleN + shrimpN + eggN}`));
+
+  const body = document.getElementById("drawerBody");
+  body.innerHTML = "";
+  const log = wh.haulLog || [];
+  if (!log.length) {
+    body.appendChild(el("div", "drawer__text", "还没有蚂蚁往仓库搬东西。"));
+  } else {
+    body.appendChild(el("div", "drawer__section", "搬入记录（新→旧）"));
+    const list = el("div", "drawer__manholeLog");
+    const recent = [...log].reverse().slice(0, 40);
+    const labelOf = (row) => {
+      if (row.label) return row.label;
+      if (row.kind === "shrimp") return "龙虾尸体";
+      if (row.kind === "fishEgg") return "鱼卵";
+      if (row.kind === "ant") return "搬运蚁（入仓）";
+      if (row.kind === "roach") return "抢食蟑";
+      return "苹果";
+    };
+    for (const row of recent) {
+      const line = el("div", "drawer__manholeLogItem", `${labelOf(row)} · ${fmtTime(row.atMs)}`);
+      list.appendChild(line);
+    }
+    body.appendChild(list);
+  }
+  focusDrawerInRail();
 }
 
 function focusDrawerInRail() {
@@ -1146,6 +1280,29 @@ function initWorld() {
   const APPLE_EAT_DIST = 11;
   const APPLE_FISH_SEEK_RANGE = 72;
   const APPLE_FISH_EAT_DIST = 13;
+  /** 蚂蚁：很小；搬苹果/死虾/鱼卵进井盖；全图不顾一切寻物；最多 50 只；低于下限补员 */
+  const MAX_ANTS = 50;
+  const MIN_ANTS = 12;
+  const ANT_SPEED = 38;
+  const ANT_CARRY_SPEED = 32;
+  /** 寻物半径（过大则每帧全图扫描拖垮帧率，表现为全场动物变慢） */
+  const ANT_SEEK_RANGE = 420;
+  const ANT_SEEK_SPEED_MULT = 1.85;
+  const ANT_PICKUP_DIST = 12;
+  const ANT_DELIVER_DIST = 14;
+  const ANT_SCALE = 0.28;
+  /** 空闲蚁隔多久重新锁定食物，避免每帧 O(蚁×食物) 扫描 */
+  const ANT_FOOD_RETARGET_MS = 160;
+  /** 抢同一份食物（苹果/死虾/鱼卵）的蟑螂会被蚂蚁拖进井盖 */
+  const ANT_ROACH_COMPETE_DIST = 24;
+  /** 蜥蜴 / 麻雀 / 鸡 / 牛蛙捕食蚂蚁的贴脸距离 */
+  const ANT_EAT_DIST = 8;
+  const ANT_REPLENISH_INTERVAL_MS = 2200;
+  const ANT_MANHOLE_HAUL_LOG_MAX = 80;
+  /** 蚂蚁拖进井盖满 10 只蟑螂后开一场蚁蟑大战；本页刷新只打一次，胜负各 50% */
+  const ANT_ROACH_WAR_HAULS = 10;
+  const ANT_ROACH_WAR_FIGHT_MS = 7000;
+  const ANT_ROACH_WAR_SPEED_MULT = 2.15;
   /** 羊：2 只；一次只啃一块草坪、一次吃一格；吃掉后 5 分钟长回 */
   const SHEEP_COUNT = 2;
   const SHEEP_SPEED = 17;
@@ -1355,6 +1512,18 @@ function initWorld() {
       /** 树上随机掉落的苹果（落地或落水后会被动物取食） */
       this.fallenApples = [];
       this._nextAppleDropAt = 0;
+      /** 蚂蚁：搬苹果 / 龙虾尸体 / 鱼卵进井盖 */
+      this.ants = [];
+      this._nextAntReplenishAt = 0;
+      /** 全广场唯一蚂蚁仓库（任意井盖入口共用） */
+      this.antWarehouse = {
+        appleCount: 0,
+        shrimpCount: 0,
+        fishEggCount: 0,
+        antCount: 0,
+        roachCount: 0,
+        haulLog: [],
+      };
       /** 草坪块：每块含若干格；可被羊吃掉并定时长回 */
       this.lawnPatches = [];
       /** 栏杆围起的禁区（AABB）；动物不可进入 */
@@ -1376,6 +1545,12 @@ function initWorld() {
       this._roachRoyaleBanner = null;
       /** @type {{ sprite: Phaser.GameObjects.Image, trophy: Phaser.GameObjects.Image, baseScale: number, endAt: number }[]} */
       this._roachRoyaleTrophyBoosts = [];
+      this._animalCensusBanner = null;
+      this._nextAnimalCensusAt = 0;
+      /** 蚁蟑大战：本页刷新只触发一次 */
+      this._antRoachWarUsed = false;
+      this._antRoachWar = null;
+      this._antRoachWarLockBrood = false;
     }
 
     nearestManholeTo(x, y) {
@@ -1449,14 +1624,16 @@ function initWorld() {
       return false;
     }
 
-    createCatAt(x, y) {
+    createCatAt(x, y, coatTint = null) {
       const sprite = this.add
         .image(x, y, "cat")
         .setOrigin(0.5)
         .setDepth(15)
         .setScale(1.18);
+      if (coatTint) sprite.setTint(coatTint);
       return {
         sprite,
+        coatTint,
         chaseMouse: null,
         chaseSparrow: null,
         fishing: null,
@@ -1519,6 +1696,23 @@ function initWorld() {
      * @param {{ vx?: number, vy?: number }} body
      */
     smoothSteer(body, dirX, dirY, speed, dt, accel = ANIMAL_STEER_ACCEL) {
+      const sp = body?.sprite;
+      if (
+        sp?.active &&
+        this.fencePaddocks?.length &&
+        !body.penned &&
+        !body.dragging &&
+        !sp._fencePenned &&
+        !sp._dragging &&
+        body.mode !== "fly"
+      ) {
+        const glen = Math.hypot(dirX, dirY);
+        if (glen > 1.5) {
+          const wp = this.steerAroundFences(sp.x, sp.y, sp.x + dirX, sp.y + dirY);
+          dirX = wp.x - sp.x;
+          dirY = wp.y - sp.y;
+        }
+      }
       const len = Math.hypot(dirX, dirY);
       const tvx = len > 0.001 ? (dirX / len) * speed : 0;
       const tvy = len > 0.001 ? (dirY / len) * speed : 0;
@@ -1540,7 +1734,7 @@ function initWorld() {
       let best = null;
       let bestD = maxDist;
       for (const ro of this.roaches || []) {
-        if (this.isRoachFeedingOnDeadShrimp(ro)) continue;
+        if (this.isRoachHauledByAnt(ro) || this.isRoachFeedingOnDeadShrimp(ro)) continue;
         const d = Math.hypot(ro.sprite.x - x, ro.sprite.y - y);
         if (d < bestD) {
           bestD = d;
@@ -1548,6 +1742,33 @@ function initWorld() {
         }
       }
       return best;
+    }
+
+    isRoachHauledByAnt(ro) {
+      const ant = ro?.claimedByAnt;
+      return !!(ant?.carry?.kind === "roach" && ant.carry.ro === ro && ant.sprite?.active);
+    }
+
+    isRoachStealingAntFood(ro) {
+      if (!ro?.sprite?.active || this.isRoachHauledByAnt(ro)) return false;
+      if (this._roachRoyaleActive) return false;
+      const x = ro.sprite.x;
+      const y = ro.sprite.y;
+      const r = ANT_ROACH_COMPETE_DIST * (this.plazaScale || 1);
+      if (this.isRoachFeedingOnDeadShrimp(ro)) return true;
+      for (const ap of this.fallenApples || []) {
+        if (!ap.landed || !ap.sprite?.active) continue;
+        if (Math.hypot(ap.sprite.x - x, ap.sprite.y - y) < r) return true;
+      }
+      for (const site of this.stallShrimpSites || []) {
+        if (!site.dead || !site.npc?.active) continue;
+        if (Math.hypot(site.npc.x - x, site.npc.y - y) < r + 8) return true;
+      }
+      for (const egg of this.pondFishEggs || []) {
+        if (!egg.sprite?.active) continue;
+        if (Math.hypot(egg.sprite.x - x, egg.sprite.y - y) < r) return true;
+      }
+      return false;
     }
 
     plazaPoolIndexAt(x, y) {
@@ -1563,7 +1784,7 @@ function initWorld() {
       let bestD = maxDist;
       for (let i = 0; i < (this.fallenApples || []).length; i++) {
         const ap = this.fallenApples[i];
-        if (!ap.landed || ap.inWater || !ap.sprite?.active) continue;
+        if (!ap.landed || ap.inWater || !ap.sprite?.active || ap.claimedByAnt) continue;
         const d = Math.hypot(ap.sprite.x - x, ap.sprite.y - y);
         if (d < bestD) {
           bestD = d;
@@ -1576,6 +1797,10 @@ function initWorld() {
 
     removeFallenAppleAt(index) {
       const ap = this.fallenApples[index];
+      if (ap?.claimedByAnt?.carry?.kind === "apple" && ap.claimedByAnt.carry.ap === ap) {
+        ap.claimedByAnt.carry = null;
+      }
+      if (ap) ap.claimedByAnt = null;
       ap?.sprite?.destroy();
       this.fallenApples.splice(index, 1);
     }
@@ -1584,7 +1809,7 @@ function initWorld() {
       const list = this.fallenApples || [];
       for (let i = list.length - 1; i >= 0; i--) {
         const ap = list[i];
-        if (!ap.landed || ap.inWater || !ap.sprite?.active) continue;
+        if (!ap.landed || ap.inWater || !ap.sprite?.active || ap.claimedByAnt) continue;
         if (Math.hypot(ap.sprite.x - x, ap.sprite.y - y) < eatDist) {
           this.removeFallenAppleAt(i);
           return true;
@@ -2069,6 +2294,7 @@ function initWorld() {
       if (!npc?.active) return;
       this.tweens.killTweensOf(npc);
       npc.setPosition(site.npcHomeX, site.npcHomeY);
+      npc.setFlipY(false);
       this.tweens.add({
         targets: npc,
         y: site.npcHomeY - 2,
@@ -2077,6 +2303,155 @@ function initWorld() {
         repeat: -1,
         ease: "Sine.inOut",
       });
+    }
+
+    wireStallShrimpDraggable(npc) {
+      if (!npc || npc._stallDragWired) return;
+      npc._stallDragWired = true;
+      npc.setInteractive({ useHandCursor: true });
+      this.input.setDraggable(npc);
+      npc.on("pointerdown", (pointer) => {
+        if (this.dogSelectArmed) return;
+        const site = npc._stallSite;
+        if (!npc.active || site?.dead || site?.antHaul) return;
+        if (pointer?.event?.stopPropagation) pointer.event.stopPropagation();
+        this._draggingFenceAnimal = true;
+        if (this._mapPointerDown) this._mapPointerDown.dragged = true;
+      });
+      npc.on("dragstart", (pointer) => {
+        if (this.dogSelectArmed) return;
+        const site = npc._stallSite;
+        if (!npc.active || site?.dead || site?.antHaul) return;
+        if (pointer?.event?.stopPropagation) pointer.event.stopPropagation();
+        this.tweens.killTweensOf(npc);
+        this.adoptIncomingStallShrimp(npc);
+        const live = npc._stallSite;
+        if (live) {
+          if (this.stallSiteIsPullingEgg(live)) this.grantPlazaAchievement("egghief");
+          this.cancelStallShrimpPullsForSite(live, false);
+          live.cooloff = null;
+          live.walkHome = false;
+          live.busy = true;
+        }
+        npc._dragging = true;
+        this._draggingFenceAnimal = true;
+        if (this._mapPointerDown) this._mapPointerDown.dragged = true;
+        npc._dragDepth = npc.depth;
+        npc.setDepth((npc.depth || 8) + 4);
+      });
+      npc.on("drag", (_pointer, dragX, dragY) => {
+        if (this.dogSelectArmed || !npc._dragging) return;
+        this._draggingFenceAnimal = true;
+        npc.setPosition(dragX, dragY);
+        const p = this.clampPosToPlaza(dragX, dragY, npc, false);
+        npc.setPosition(p.x, p.y);
+      });
+      npc.on("dragend", () => {
+        this._draggingFenceAnimal = false;
+        if (!npc._dragging) return;
+        npc._dragging = false;
+        npc.setDepth(npc._dragDepth || 8);
+        this.checkDraggedAnimalAchievements(npc);
+        this.sendStallShrimpToNearestBooth(npc);
+      });
+    }
+
+    stallSiteIsPullingEgg(site) {
+      if (!site) return false;
+      if (site.npc?._stallPullEggRef) return true;
+      for (const egg of [...(this.pondFishEggs || []), ...(this.lizardEggs || [])]) {
+        if (egg.stallPull?.site === site) return true;
+      }
+      return false;
+    }
+
+    adoptIncomingStallShrimp(npc) {
+      const site = npc?._stallSite;
+      if (!site || site.incoming?.npc !== npc) return;
+      site.incoming = null;
+      site.npc = npc;
+      site.dead = false;
+      site.busy = true;
+    }
+
+    findNearestStallSiteAt(x, y) {
+      let best = null;
+      let bestD = Infinity;
+      for (const site of this.stallShrimpSites || []) {
+        if (site.dead || !site.npc?.active) continue;
+        const d = Math.hypot(site.stallX - x, site.stallY - y);
+        if (d < bestD) {
+          bestD = d;
+          best = site;
+        }
+      }
+      return best;
+    }
+
+    swapStallShrimpBindings(a, b) {
+      if (!a || !b || a === b) return;
+      const na = a.npc;
+      const nb = b.npc;
+      a.npc = nb;
+      b.npc = na;
+      if (na) na._stallSite = b;
+      if (nb) nb._stallSite = a;
+    }
+
+    beginStallShrimpWalkHome(site) {
+      const npc = site?.npc;
+      if (!npc?.active || site.dead) return;
+      this.tweens.killTweensOf(npc);
+      this.cancelStallShrimpPullsForSite(site, false);
+      site.cooloff = null;
+      site.incoming = null;
+      site.walkHome = true;
+      site.busy = true;
+      npc.setFlipY(false);
+    }
+
+    sendStallShrimpToNearestBooth(npc) {
+      if (!npc?.active) return;
+      this.adoptIncomingStallShrimp(npc);
+      const from = npc._stallSite;
+      const nearest = this.findNearestStallSiteAt(npc.x, npc.y) || from;
+      if (!nearest) return;
+      if (nearest !== from && nearest.npc?.active && nearest.npc !== npc) {
+        this.swapStallShrimpBindings(from, nearest);
+        this.beginStallShrimpWalkHome(nearest);
+        this.beginStallShrimpWalkHome(from);
+        return;
+      }
+      if (from) this.beginStallShrimpWalkHome(from);
+    }
+
+    updateStallShrimpWalkHome(_now, dt) {
+      const ps = this.plazaScale || 1;
+      const spd = STALL_SHRIMP_COOLOFF_SPEED * 1.15 * ps;
+      const homeD = 12 * ps;
+      for (const site of this.stallShrimpSites || []) {
+        if (!site.walkHome) continue;
+        const npc = site.npc;
+        if (!npc?.active || npc._dragging || site.dead) {
+          site.walkHome = false;
+          continue;
+        }
+        const dx = site.npcHomeX - npc.x;
+        const dy = site.npcHomeY - npc.y;
+        const len = Math.hypot(dx, dy) || 1;
+        if (len < homeD) {
+          npc.setPosition(site.npcHomeX, site.npcHomeY);
+          npc.setFlipX(false);
+          site.walkHome = false;
+          site.busy = false;
+          this.restoreShrimpBobAtSite(site);
+        } else {
+          const step = Math.min(spd * dt, len);
+          npc.setPosition(npc.x + (dx / len) * step, npc.y + (dy / len) * step);
+          if (Math.abs(dx) > 0.35) npc.setFlipX(dx < 0);
+          this.clampSpriteToPlaza(npc, false);
+        }
+      }
     }
 
     cancelStallShrimpEggPull(egg, restoreShrimp) {
@@ -2210,7 +2585,7 @@ function initWorld() {
 
     tryAssignStallShrimpPull(egg, kind) {
       if (!egg?.sprite?.active) return;
-      if (egg.stallPull) return;
+      if (egg.stallPull || egg.claimedByAnt) return;
       const sites = this.stallShrimpSites;
       if (!sites?.length) return;
       const ex = egg.sprite.x;
@@ -2325,7 +2700,7 @@ function initWorld() {
         }
         const site = sp.site;
         const npc = site?.npc;
-        if (!npc?.active) {
+        if (!npc?.active || npc._dragging || site?.walkHome) {
           this.cancelStallShrimpEggPull(egg, false);
           return;
         }
@@ -2428,14 +2803,16 @@ function initWorld() {
         !site.dead &&
         !site.cooloff &&
         !site.incoming &&
+        !site.walkHome &&
         !site.eggBatchResolving &&
-        site.npc?.active
+        site.npc?.active &&
+        !site.npc._dragging
       );
     }
 
-    /** 牛蛙可追咬：站摊 idle、虾扯蛋、池里乘凉均可；不含死虾与替补进场的虾 */
+    /** 牛蛙可追咬：站摊 idle、虾扯蛋、池里乘凉均可；不含死虾、替补进场与拖拽中的虾 */
     canFrogTargetStallShrimp(site) {
-      return !!(site && !site.dead && !site.incoming && site.npc?.active);
+      return !!(site && !site.dead && !site.incoming && site.npc?.active && !site.npc._dragging);
     }
 
     pickPlazaEntryPoint(x, y) {
@@ -2485,6 +2862,7 @@ function initWorld() {
     /** 蟑螂贴脸啃死虾时：牛蛙/蜥蜴/蛇/老鼠/麻雀不追捕 */
     isRoachFeedingOnDeadShrimp(ro) {
       if (!ro?.sprite?.active) return false;
+      if (this.isRoachHauledByAnt(ro)) return true;
       const dead = this.findNearestDeadStallShrimp(ro.sprite.x, ro.sprite.y);
       if (!dead) return false;
       const ps = this.plazaScale || 1;
@@ -2537,7 +2915,7 @@ function initWorld() {
       for (const site of this.stallShrimpSites || []) {
         const cf = site.cooloff;
         const npc = site.npc;
-        if (!cf || !npc?.active) continue;
+        if (!cf || !npc?.active || npc._dragging || site.walkHome) continue;
 
         if (cf.phase === "to_pool") {
           const dx = cf.poolX - npc.x;
@@ -2593,6 +2971,11 @@ function initWorld() {
       npc.setFlipY(true);
       npc.setTint(0x6a5048);
       npc.setDepth(8.2);
+      try {
+        npc.disableInteractive();
+      } catch {
+        /* noop */
+      }
     }
 
     startStallShrimpReplacement(site, now) {
@@ -2604,6 +2987,7 @@ function initWorld() {
         .setDepth(8)
         .setTint(site.stallTint ?? 0xffffff);
       npc._stallSite = site;
+      this.wireStallShrimpDraggable(npc);
       this.boothNpcs.push(npc);
       site.incoming = { npc, startedAt: now };
     }
@@ -2611,18 +2995,26 @@ function initWorld() {
     updateDeadStallShrimpSites(now) {
       for (const site of this.stallShrimpSites || []) {
         if (!site.dead || !site.npc?.active) continue;
+        if (site.antHaul) continue;
         const sx = site.npc.x;
         const sy = site.npc.y;
         if (this.countRoachesNear(sx, sy, DEAD_SHRIMP_ROACH_GATHER_DIST) < DEAD_SHRIMP_ROACH_GATHER_COUNT) continue;
 
+        const npc = site.npc;
+        this.tweens.killTweensOf(npc);
+        const bi = (this.boothNpcs || []).indexOf(npc);
+        if (bi >= 0) this.boothNpcs.splice(bi, 1);
+        const bj = (this.booths || []).indexOf(npc);
+        if (bj >= 0) this.booths.splice(bj, 1);
         try {
-          site.npc.destroy();
+          npc.destroy();
         } catch {
           /* noop */
         }
         site.npc = null;
         site.dead = false;
         site.busy = true;
+        site.antHaul = null;
         this.startStallShrimpReplacement(site, now);
       }
     }
@@ -2639,6 +3031,7 @@ function initWorld() {
           continue;
         }
         const npc = inc.npc;
+        if (npc._dragging) continue;
         const dx = site.npcHomeX - npc.x;
         const dy = site.npcHomeY - npc.y;
         const len = Math.hypot(dx, dy) || 1;
@@ -2756,7 +3149,7 @@ function initWorld() {
           this.pondFishEggs.splice(ei, 1);
           continue;
         }
-        if (e.stallPull) continue;
+        if (e.stallPull || e.claimedByAnt) continue;
         if (now < e.hatchAt) continue;
         const pi = e.poolIndex;
         const hx = e.sprite.x;
@@ -3007,6 +3400,153 @@ function initWorld() {
       return { x: px, y: py };
     }
 
+    fenceKeepAwayPad() {
+      return 16 * (this.plazaScale || 1);
+    }
+
+    pointInFenceKeepAway(x, y) {
+      const pad = this.fenceKeepAwayPad();
+      for (const r of this.fencePaddocks || []) {
+        const e = this.expandFenceAabb(r, pad);
+        if (x >= e.minX && x <= e.maxX && y >= e.minY && y <= e.maxY) return true;
+      }
+      return false;
+    }
+
+    /** 栏杆及其外围一圈都不可走（关在里面的动物除外） */
+    pushAwayFromFenceKeepout(x, y) {
+      const pad = this.fenceKeepAwayPad();
+      let px = x;
+      let py = y;
+      for (const raw of this.fencePaddocks || []) {
+        const r = this.expandFenceAabb(raw, pad);
+        if (px < r.minX || px > r.maxX || py < r.minY || py > r.maxY) continue;
+        const dLeft = px - r.minX;
+        const dRight = r.maxX - px;
+        const dTop = py - r.minY;
+        const dBot = r.maxY - py;
+        const m = Math.min(dLeft, dRight, dTop, dBot);
+        if (m === dLeft) px = r.minX;
+        else if (m === dRight) px = r.maxX;
+        else if (m === dTop) py = r.minY;
+        else py = r.maxY;
+      }
+      return { x: px, y: py };
+    }
+
+    expandFenceAabb(r, pad) {
+      return {
+        minX: r.minX - pad,
+        maxX: r.maxX + pad,
+        minY: r.minY - pad,
+        maxY: r.maxY + pad,
+      };
+    }
+
+    pointInAabbOpen(x, y, r) {
+      return x > r.minX && x < r.maxX && y > r.minY && y < r.maxY;
+    }
+
+    /** 线段是否穿过栏杆围栏内部（不含贴边） */
+    segmentHitsAabb(x0, y0, x1, y1, r) {
+      if (this.pointInAabbOpen(x0, y0, r) || this.pointInAabbOpen(x1, y1, r)) return true;
+      let t0 = 0;
+      let t1 = 1;
+      const dx = x1 - x0;
+      const dy = y1 - y0;
+      const pqs = [
+        [-dx, x0 - r.minX],
+        [dx, r.maxX - x0],
+        [-dy, y0 - r.minY],
+        [dy, r.maxY - y0],
+      ];
+      for (let i = 0; i < 4; i++) {
+        const p = pqs[i][0];
+        const q = pqs[i][1];
+        if (Math.abs(p) < 1e-12) {
+          if (q < 0) return false;
+          continue;
+        }
+        const t = q / p;
+        if (p < 0) {
+          if (t > t1) return false;
+          if (t > t0) t0 = t;
+        } else {
+          if (t < t0) return false;
+          if (t < t1) t1 = t;
+        }
+      }
+      return t0 < t1 && t0 < 1 && t1 > 0;
+    }
+
+    closestPointOutsideFence(x, y, r, pad) {
+      const e = this.expandFenceAabb(r, pad);
+      if (!this.pointInAabbOpen(x, y, e) && !(x >= e.minX && x <= e.maxX && y >= e.minY && y <= e.maxY)) {
+        return { x, y };
+      }
+      const dLeft = Math.abs(x - e.minX);
+      const dRight = Math.abs(e.maxX - x);
+      const dTop = Math.abs(y - e.minY);
+      const dBot = Math.abs(e.maxY - y);
+      const m = Math.min(dLeft, dRight, dTop, dBot);
+      if (m === dLeft) return { x: e.minX, y: clamp(y, e.minY, e.maxY) };
+      if (m === dRight) return { x: e.maxX, y: clamp(y, e.minY, e.maxY) };
+      if (m === dTop) return { x: clamp(x, e.minX, e.maxX), y: e.minY };
+      return { x: clamp(x, e.minX, e.maxX), y: e.maxY };
+    }
+
+    /**
+     * 目标在栏杆内或直线穿栏时，改走围栏外角，让动物绕开而不是贴墙挤。
+     */
+    steerAroundFences(sx, sy, tx, ty) {
+      const fences = this.fencePaddocks;
+      if (!fences?.length) return { x: tx, y: ty };
+      const pad = this.fenceKeepAwayPad();
+      let gx = tx;
+      let gy = ty;
+      for (const raw of fences) {
+        const r = this.expandFenceAabb(raw, pad);
+        const goalInside = gx >= raw.minX && gx <= raw.maxX && gy >= raw.minY && gy <= raw.maxY;
+        if (goalInside) {
+          const snap = this.closestPointOutsideFence(gx, gy, raw, pad);
+          gx = snap.x;
+          gy = snap.y;
+        }
+        if (!this.segmentHitsAabb(sx, sy, gx, gy, r)) continue;
+        const corners = [
+          { x: r.minX, y: r.minY },
+          { x: r.maxX, y: r.minY },
+          { x: r.minX, y: r.maxY },
+          { x: r.maxX, y: r.maxY },
+        ];
+        let best = null;
+        let bestD = Infinity;
+        for (const c of corners) {
+          if (this.segmentHitsAabb(sx, sy, c.x, c.y, r)) continue;
+          const d = Math.hypot(sx - c.x, sy - c.y) + Math.hypot(gx - c.x, gy - c.y);
+          if (d < bestD) {
+            bestD = d;
+            best = c;
+          }
+        }
+        if (!best) {
+          let nd = Infinity;
+          for (const c of corners) {
+            const d = Math.hypot(sx - c.x, sy - c.y);
+            if (d < nd) {
+              nd = d;
+              best = c;
+            }
+          }
+        }
+        if (best) {
+          gx = best.x;
+          gy = best.y;
+        }
+      }
+      return { x: gx, y: gy };
+    }
+
     randomPlazaWalkPointAvoidingPools() {
       const p = this.plazaWalkBounds;
       if (!p) return null;
@@ -3014,7 +3554,7 @@ function initWorld() {
         const tx = p.minX + Math.random() * (p.maxX - p.minX);
         const ty = p.minY + Math.random() * (p.maxY - p.minY);
         if (this.pointInAnyPlazaPool(tx, ty)) continue;
-        if (this.pointInFencePaddock(tx, ty)) continue;
+        if (this.pointInFenceKeepAway(tx, ty)) continue;
         return { x: tx, y: ty };
       }
       return {
@@ -3305,7 +3845,7 @@ function initWorld() {
           px = f.x;
           py = f.y;
         } else {
-          const f = this.pushOutOfFencePaddocks(px, py, 5 * (this.plazaScale || 1));
+          const f = this.pushAwayFromFenceKeepout(px, py);
           px = f.x;
           py = f.y;
         }
@@ -4160,6 +4700,715 @@ function initWorld() {
       ch.target.y = ch.home.y + (Math.random() - 0.5) * 100;
     }
 
+    createAntAt(x, y) {
+      const sprite = this.add
+        .image(x, y, "ant")
+        .setOrigin(0.5, 0.5)
+        .setDepth(15.05)
+        .setScale(ANT_SCALE);
+      return {
+        sprite,
+        home: { x, y },
+        target: { x, y },
+        retargetAt: 0,
+        carry: null,
+        vx: 0,
+        vy: 0,
+      };
+    }
+
+    /** 正在搬货的蚂蚁免疫捕食 */
+    isAntCarrying(ant) {
+      return !!(ant?.carry && ant.sprite?.active);
+    }
+
+    findNearestAntPrey(x, y, maxDist = Infinity) {
+      let best = null;
+      let bestD = maxDist;
+      for (const ant of this.ants || []) {
+        if (!ant.sprite?.active || this.isAntCarrying(ant)) continue;
+        const d = Math.hypot(ant.sprite.x - x, ant.sprite.y - y);
+        if (d < bestD) {
+          bestD = d;
+          best = ant;
+        }
+      }
+      return best;
+    }
+
+    removeAntAt(ai) {
+      if (ai == null || ai < 0) return false;
+      const ant = this.ants?.[ai];
+      if (!ant) return false;
+      this.clearAntCarry(ant);
+      try {
+        ant.sprite?.destroy();
+      } catch {
+        /* noop */
+      }
+      this.ants.splice(ai, 1);
+      return true;
+    }
+
+    killAnt(ant) {
+      if (!ant || this.isAntCarrying(ant)) return false;
+      const ai = (this.ants || []).indexOf(ant);
+      if (ai < 0) return false;
+      return this.removeAntAt(ai);
+    }
+
+    pickAntTarget(ant) {
+      const pt = this.randomPlazaWalkPointAvoidingPools();
+      if (pt) {
+        ant.target.x = pt.x;
+        ant.target.y = pt.y;
+        return;
+      }
+      const p = this.plazaWalkBounds;
+      if (p) {
+        ant.target.x = p.minX + Math.random() * (p.maxX - p.minX);
+        ant.target.y = p.minY + Math.random() * (p.maxY - p.minY);
+        return;
+      }
+      ant.target.x = ant.home.x + (Math.random() - 0.5) * 80;
+      ant.target.y = ant.home.y + (Math.random() - 0.5) * 80;
+    }
+
+    /** 本帧可搬运食物快照（updateAnts 开头建一次，供多只蚁复用） */
+    collectAntHaulCandidates() {
+      const list = [];
+      for (const ap of this.fallenApples || []) {
+        if (!ap.landed || !ap.sprite?.active || ap.claimedByAnt) continue;
+        list.push({ kind: "apple", ap, x: ap.sprite.x, y: ap.sprite.y });
+      }
+      for (const site of this.stallShrimpSites || []) {
+        if (!site.dead || !site.npc?.active || site.antHaul) continue;
+        list.push({ kind: "shrimp", site, x: site.npc.x, y: site.npc.y });
+      }
+      for (const egg of this.pondFishEggs || []) {
+        if (!egg.sprite?.active || egg.claimedByAnt) continue;
+        list.push({ kind: "fishEgg", egg, x: egg.sprite.x, y: egg.sprite.y });
+      }
+      for (const ro of this.roaches || []) {
+        if (!ro.sprite?.active || ro.claimedByAnt) continue;
+        if (!this.isRoachStealingAntFood(ro)) continue;
+        list.push({ kind: "roach", ro, x: ro.sprite.x, y: ro.sprite.y });
+      }
+      return list;
+    }
+
+    findAntHaulTarget(x, y, candidates = null) {
+      const ps = this.plazaScale || 1;
+      let best = null;
+      let bestD = ANT_SEEK_RANGE * ps;
+      const list = candidates || this.collectAntHaulCandidates();
+      for (const item of list) {
+        if (item.kind === "apple" && item.ap.claimedByAnt) continue;
+        if (item.kind === "shrimp" && item.site.antHaul) continue;
+        if (item.kind === "fishEgg" && item.egg.claimedByAnt) continue;
+        if (item.kind === "roach" && (item.ro.claimedByAnt || !item.ro.sprite?.active)) continue;
+        const d0 = Math.hypot(item.x - x, item.y - y);
+        const d = item.kind === "roach" ? d0 * 0.72 : d0;
+        if (d < bestD) {
+          bestD = d;
+          best = { ...item, dist: d };
+        }
+      }
+      return best;
+    }
+
+    antFoodWorldPos(food) {
+      if (!food) return null;
+      if (food.kind === "apple" && food.ap?.sprite?.active) {
+        return { x: food.ap.sprite.x, y: food.ap.sprite.y };
+      }
+      if (food.kind === "shrimp" && food.site?.npc?.active) {
+        return { x: food.site.npc.x, y: food.site.npc.y };
+      }
+      if (food.kind === "fishEgg" && food.egg?.sprite?.active) {
+        return { x: food.egg.sprite.x, y: food.egg.sprite.y };
+      }
+      if (food.kind === "roach" && food.ro?.sprite?.active) {
+        return { x: food.ro.sprite.x, y: food.ro.sprite.y };
+      }
+      return null;
+    }
+
+    clearAntCarry(ant) {
+      const carry = ant?.carry;
+      if (!carry) return;
+      if (carry.kind === "apple" && carry.ap) {
+        if (carry.ap.claimedByAnt === ant) carry.ap.claimedByAnt = null;
+      } else if (carry.kind === "shrimp" && carry.site) {
+        if (carry.site.antHaul === ant) carry.site.antHaul = null;
+      } else if (carry.kind === "fishEgg" && carry.egg) {
+        if (carry.egg.claimedByAnt === ant) carry.egg.claimedByAnt = null;
+      } else if (carry.kind === "roach" && carry.ro) {
+        if (carry.ro.claimedByAnt === ant) carry.ro.claimedByAnt = null;
+        if (carry.ro.sprite?.active) {
+          carry.ro.sprite.setFlipY(false);
+          carry.ro.sprite.setScale(0.25);
+          carry.ro.sprite.setDepth(15);
+        }
+      }
+      ant.carry = null;
+    }
+
+    disableCargoInput(sprite) {
+      if (!sprite?.active) return;
+      try {
+        if (sprite.input) sprite.disableInteractive();
+      } catch {
+        /* noop */
+      }
+    }
+
+    syncAntCargoPose(ant) {
+      const carry = ant?.carry;
+      if (!carry) return;
+      const ax = ant.sprite.x;
+      const ay = ant.sprite.y;
+      const behind = (ant.vx || 0) >= 0 ? -3.5 : 3.5;
+      if (carry.kind === "apple" && carry.ap?.sprite?.active) {
+        if (!carry._inputOff) {
+          this.disableCargoInput(carry.ap.sprite);
+          carry.ap.sprite.setScale(0.42);
+          carry.ap.sprite.setDepth(15.02);
+          carry._inputOff = true;
+        }
+        carry.ap.sprite.setPosition(ax + behind, ay + 1.5);
+      } else if (carry.kind === "shrimp" && carry.site?.npc?.active) {
+        if (!carry._inputOff) {
+          this.disableCargoInput(carry.site.npc);
+          this.tweens.killTweensOf(carry.site.npc);
+          carry.site.npc.setDepth(15.01);
+          carry._inputOff = true;
+        }
+        carry.site.npc.setPosition(ax + behind * 1.4, ay + 2);
+      } else if (carry.kind === "fishEgg" && carry.egg?.sprite?.active) {
+        if (!carry._inputOff) {
+          this.disableCargoInput(carry.egg.sprite);
+          carry.egg.sprite.setDepth(15.03);
+          carry._inputOff = true;
+        }
+        carry.egg.sprite.setPosition(ax + behind * 0.9, ay + 1.2);
+      } else if (carry.kind === "roach" && carry.ro?.sprite?.active) {
+        if (!carry._inputOff) {
+          this.disableCargoInput(carry.ro.sprite);
+          carry.ro.sprite.setFlipY(true);
+          carry.ro.sprite.setScale(0.18);
+          carry.ro.sprite.setDepth(15.04);
+          carry._inputOff = true;
+        }
+        carry.ro.sprite.setPosition(ax + behind * 1.1, ay + 1.4);
+      }
+    }
+
+    purgeInactiveBoothSprites() {
+      if (this.boothNpcs?.length) {
+        this.boothNpcs = this.boothNpcs.filter((n) => n?.active);
+      }
+      if (this.booths?.length) {
+        this.booths = this.booths.filter((b) => b?.active);
+      }
+    }
+
+    queueSpawnAntNear(x, y, now) {
+      if (!this._pendingAntSpawns) this._pendingAntSpawns = [];
+      if ((this.ants?.length || 0) + this._pendingAntSpawns.length >= MAX_ANTS) return;
+      this._pendingAntSpawns.push({ x, y, now });
+    }
+
+    flushPendingAntSpawns() {
+      const pending = this._pendingAntSpawns;
+      this._pendingAntSpawns = [];
+      if (!pending?.length) return;
+      if (!this.ants) this.ants = [];
+      for (const p of pending) {
+        if (this.ants.length >= MAX_ANTS) break;
+        const c = this.clampPosToPlaza(
+          p.x + (Math.random() - 0.5) * 18,
+          p.y + (Math.random() - 0.5) * 18,
+        );
+        if (!Number.isFinite(c.x) || !Number.isFinite(c.y)) continue;
+        const ant = this.createAntAt(c.x, c.y);
+        this.pickAntTarget(ant);
+        ant.retargetAt = (p.now || 0) + 400 + Math.random() * 800;
+        this.ants.push(ant);
+      }
+    }
+
+    trySpawnAntNear(x, y, now) {
+      // 禁止在遍历 ants 时直接 push，否则 for...of 会接着迭代新蚁，极端情况下拖死主线程
+      this.queueSpawnAntNear(x, y, now);
+      return null;
+    }
+
+    resetAntIfInvalid(ant) {
+      const sp = ant?.sprite;
+      if (!sp?.active) return false;
+      if (Number.isFinite(sp.x) && Number.isFinite(sp.y)) return true;
+      this.clearAntCarry(ant);
+      const holes = this.manholes || [];
+      const h = holes[0] || { x: 0, y: 0 };
+      const c = this.clampPosToPlaza(h.x, h.y, sp, true);
+      sp.setPosition(c.x, c.y);
+      ant.vx = 0;
+      ant.vy = 0;
+      ant._haulTarget = null;
+      return Number.isFinite(sp.x) && Number.isFinite(sp.y);
+    }
+
+    recordAntManholeHaul(_mh, kind, now) {
+      if (!this.antWarehouse) {
+        this.antWarehouse = {
+          appleCount: 0,
+          shrimpCount: 0,
+          fishEggCount: 0,
+          antCount: 0,
+          roachCount: 0,
+          haulLog: [],
+        };
+      }
+      const wh = this.antWarehouse;
+      if (!wh.haulLog) wh.haulLog = [];
+      if (kind === "apple") {
+        wh.appleCount = (wh.appleCount || 0) + 1;
+        wh.haulLog.push({ kind: "apple", label: "苹果", atMs: now });
+      } else if (kind === "shrimp") {
+        wh.shrimpCount = (wh.shrimpCount || 0) + 1;
+        wh.haulLog.push({ kind: "shrimp", label: "龙虾尸体", atMs: now });
+      } else if (kind === "fishEgg") {
+        wh.fishEggCount = (wh.fishEggCount || 0) + 1;
+        wh.haulLog.push({ kind: "fishEgg", label: "鱼卵", atMs: now });
+      } else if (kind === "ant") {
+        wh.antCount = (wh.antCount || 0) + 1;
+        wh.haulLog.push({ kind: "ant", label: "搬运蚁（入仓）", atMs: now });
+      } else if (kind === "roach") {
+        wh.roachCount = (wh.roachCount || 0) + 1;
+        wh.haulLog.push({ kind: "roach", label: "抢食蟑", atMs: now });
+      } else {
+        return;
+      }
+      if (wh.haulLog.length > ANT_MANHOLE_HAUL_LOG_MAX) {
+        wh.haulLog.splice(0, wh.haulLog.length - ANT_MANHOLE_HAUL_LOG_MAX);
+      }
+      if (typeof window.__syncAntWarehouseHud === "function") {
+        window.__syncAntWarehouseHud();
+      }
+      if (kind === "roach") this.tryStartAntRoachWar(now);
+    }
+
+    isAntRoachWarFighting() {
+      return this._antRoachWar?.phase === "fight";
+    }
+
+    showPlazaNotice(text, holdMs = 2800) {
+      const banner = this._animalCensusBanner;
+      if (!banner?.active) return;
+      banner.setText(text);
+      banner.setVisible(true);
+      this.tweens.killTweensOf(banner);
+      banner.setAlpha(1);
+      this.tweens.add({
+        targets: banner,
+        alpha: 0,
+        delay: holdMs,
+        duration: 500,
+        onComplete: () => {
+          if (banner.active) banner.setVisible(false);
+        },
+      });
+    }
+
+    tryStartAntRoachWar(now) {
+      if (this._antRoachWarUsed || this._antRoachWar) return;
+      const hauled = this.antWarehouse?.roachCount || 0;
+      if (hauled < ANT_ROACH_WAR_HAULS) return;
+      this._antRoachWarUsed = true;
+      const winner = Math.random() < 0.5 ? "ants" : "roaches";
+      this._antRoachWar = {
+        phase: "fight",
+        winner,
+        until: now + ANT_ROACH_WAR_FIGHT_MS,
+      };
+      this.showPlazaNotice("蚁蟑大战！胜负各半", 2200);
+      const holes = this.manholes || [];
+      for (let i = 0; i < 8; i++) {
+        const h = holes[i % Math.max(1, holes.length)] || { x: 0, y: 0 };
+        this.queueSpawnAntNear(h.x, h.y, now);
+      }
+      const maxR = this.getMaxRoaches ? this.getMaxRoaches() : MAX_ROACHES_NORMAL;
+      const needR = Math.min(12, Math.max(0, maxR - (this.roaches || []).length));
+      for (let i = 0; i < needR; i++) {
+        const pt = this.randomPlazaWalkPointAvoidingPools() || { x: 0, y: 0 };
+        const ro = this.createRoachAt(pt.x, pt.y);
+        this.pickRoachTarget(ro);
+        ro.retargetAt = now + 200;
+        this.roaches.push(ro);
+      }
+    }
+
+    nearestLiveAntForWar(x, y) {
+      let best = null;
+      let bestD = Infinity;
+      for (const ant of this.ants || []) {
+        if (!ant.sprite?.active) continue;
+        const d = Math.hypot(ant.sprite.x - x, ant.sprite.y - y);
+        if (d < bestD) {
+          bestD = d;
+          best = ant;
+        }
+      }
+      return best;
+    }
+
+    nearestLiveRoachForWar(x, y) {
+      let best = null;
+      let bestD = Infinity;
+      for (const ro of this.roaches || []) {
+        if (!ro.sprite?.active || this.isRoachHauledByAnt(ro)) continue;
+        const d = Math.hypot(ro.sprite.x - x, ro.sprite.y - y);
+        if (d < bestD) {
+          bestD = d;
+          best = ro;
+        }
+      }
+      return best;
+    }
+
+    resolveAntRoachWar(now) {
+      const war = this._antRoachWar;
+      if (!war) return;
+      const winner = war.winner;
+      this._antRoachWar = { phase: "done", winner, until: 0 };
+      if (winner === "ants") {
+        this._antRoachWarLockBrood = true;
+        this.roachBreedLock = now + 18000;
+        for (let ri = (this.roaches || []).length - 1; ri >= 0; ri--) {
+          const ro = this.roaches[ri];
+          if (ro?.claimedByAnt) {
+            const ant = ro.claimedByAnt;
+            if (ant?.carry?.kind === "roach" && ant.carry.ro === ro) this.clearAntCarry(ant);
+          }
+          try {
+            ro.sprite?.destroy();
+          } catch {
+            /* noop */
+          }
+          this.roaches.splice(ri, 1);
+        }
+        this.showPlazaNotice("蚁蟑大战：蚂蚁获胜", 3600);
+      } else {
+        const keep = MIN_ANTS;
+        for (let ai = (this.ants || []).length - 1; ai >= keep; ai--) {
+          this.removeAntAt(ai);
+        }
+        this.showPlazaNotice("蚁蟑大战：蟑螂获胜", 3600);
+      }
+    }
+
+    updateAntRoachWar(now) {
+      const war = this._antRoachWar;
+      if (!war || war.phase !== "fight") return;
+      if (now >= war.until) this.resolveAntRoachWar(now);
+    }
+
+    ensureAntPopulation(now) {
+      if (!this.ants) this.ants = [];
+      this.ants = this.ants.filter((a) => a.sprite?.active);
+      if (now < (this._nextAntReplenishAt || 0)) return;
+      this._nextAntReplenishAt = now + ANT_REPLENISH_INTERVAL_MS;
+      if (now >= (this._nextBoothPurgeAt || 0)) {
+        this._nextBoothPurgeAt = now + 5000;
+        this.purgeInactiveBoothSprites();
+      }
+      const n = this.ants.length;
+      if (n >= MIN_ANTS) return;
+      const holes = this.manholes || [];
+      if (!holes.length) return;
+      let need = MIN_ANTS - n;
+      if (n < 5) need = Math.min(MAX_ANTS - n, need + 4);
+      for (let i = 0; i < need; i++) {
+        const h = holes[Math.floor(Math.random() * holes.length)];
+        this.queueSpawnAntNear(h.x, h.y, now);
+      }
+    }
+
+    deliverAntCargoAtManhole(ant, manhole, now) {
+      const carry = ant?.carry;
+      if (!carry || ant._delivering) return;
+      ant._delivering = true;
+      const kind = carry.kind;
+      try {
+        ant.carry = null;
+        ant._haulTarget = null;
+        if (kind === "apple" && carry.ap) {
+          if (carry.ap.claimedByAnt === ant) carry.ap.claimedByAnt = null;
+          const idx = (this.fallenApples || []).indexOf(carry.ap);
+          if (idx >= 0) this.removeFallenAppleAt(idx);
+          else {
+            try {
+              carry.ap.sprite?.destroy();
+            } catch {
+              /* noop */
+            }
+          }
+        } else if (kind === "shrimp" && carry.site) {
+          const site = carry.site;
+          const npc = site.npc;
+          if (site.antHaul === ant) site.antHaul = null;
+          if (npc) {
+            this.tweens.killTweensOf(npc);
+            this.disableCargoInput(npc);
+            const bi = (this.boothNpcs || []).indexOf(npc);
+            if (bi >= 0) this.boothNpcs.splice(bi, 1);
+            const bj = (this.booths || []).indexOf(npc);
+            if (bj >= 0) this.booths.splice(bj, 1);
+            try {
+              npc.destroy();
+            } catch {
+              /* noop */
+            }
+          }
+          site.npc = null;
+          site.dead = false;
+          site.busy = true;
+          site.antHaul = null;
+          this.startStallShrimpReplacement(site, now);
+        } else if (kind === "fishEgg" && carry.egg) {
+          const egg = carry.egg;
+          if (egg.claimedByAnt === ant) egg.claimedByAnt = null;
+          if (egg.stallPull) this.cancelStallShrimpEggPull(egg, true);
+          const ix = (this.pondFishEggs || []).indexOf(egg);
+          if (ix >= 0) this.pondFishEggs.splice(ix, 1);
+          try {
+            egg.sprite?.destroy();
+          } catch {
+            /* noop */
+          }
+        } else if (kind === "roach" && carry.ro) {
+          const ro = carry.ro;
+          if (ro.claimedByAnt === ant) ro.claimedByAnt = null;
+          const ri = (this.roaches || []).indexOf(ro);
+          if (ri >= 0) this.removeRoachAt(ri, now);
+          else {
+            try {
+              ro.sprite?.destroy();
+            } catch {
+              /* noop */
+            }
+          }
+        }
+
+        this.recordAntManholeHaul(manhole, kind, now);
+        // 进井盖 = 入仓被吃：蚂蚁随货物进巢，不再从别处钻出
+        this.recordAntManholeHaul(manhole, "ant", now);
+        this.removeAntAt((this.ants || []).indexOf(ant));
+        const alive = (this.ants || []).filter((a) => a.sprite?.active).length;
+        if (alive < MIN_ANTS) {
+          const hx = manhole?.x ?? 0;
+          const hy = manhole?.y ?? 0;
+          this.queueSpawnAntNear(hx, hy, now);
+        }
+      } finally {
+        if (ant) ant._delivering = false;
+      }
+    }
+
+    updateAnts(now, dt) {
+      if (!this.ants) this.ants = [];
+      this._pendingAntSpawns = this._pendingAntSpawns || [];
+      const ps = this.plazaScale || 1;
+      const pickupD = ANT_PICKUP_DIST * ps;
+      const deliverD = ANT_DELIVER_DIST * ps;
+      const haulCandidates = this.collectAntHaulCandidates();
+      const hasFood = haulCandidates.length > 0;
+      // 快照遍历，避免交付时 queueSpawn / filter 影响当前循环
+      const antsSnap = this.ants.slice();
+      let deliversLeft = 4;
+
+      for (let ai = 0; ai < antsSnap.length; ai++) {
+        const ant = antsSnap[ai];
+        try {
+          if (!ant?.sprite?.active) continue;
+          if (!this.resetAntIfInvalid(ant)) continue;
+
+          if (ant.carry?.kind === "apple") {
+            const ap = ant.carry.ap;
+            if (!ap || !ap.sprite?.active) this.clearAntCarry(ant);
+          } else if (ant.carry?.kind === "shrimp") {
+            const site = ant.carry.site;
+            if (!site?.dead || !site.npc?.active) this.clearAntCarry(ant);
+          } else if (ant.carry?.kind === "fishEgg") {
+            const egg = ant.carry.egg;
+            if (!egg?.sprite?.active) this.clearAntCarry(ant);
+          } else if (ant.carry?.kind === "roach") {
+            const ro = ant.carry.ro;
+            if (!ro?.sprite?.active) this.clearAntCarry(ant);
+          }
+
+          let tx;
+          let ty;
+
+          if (ant.carry) {
+            const mh = this.nearestManholeTo(ant.sprite.x, ant.sprite.y);
+            if (!mh) {
+              this.clearAntCarry(ant);
+              continue;
+            }
+            tx = mh.x - ant.sprite.x;
+            ty = mh.y - ant.sprite.y;
+            if (!Number.isFinite(tx) || !Number.isFinite(ty)) {
+              this.clearAntCarry(ant);
+              continue;
+            }
+            const speed = ANT_CARRY_SPEED * ANIMAL_SPEED_MULT;
+            const sm = this.smoothSteer(ant, tx, ty, speed, dt, ANIMAL_STEER_ACCEL * 1.85);
+            if (!Number.isFinite(sm.dx) || !Number.isFinite(sm.dy)) {
+              ant.vx = 0;
+              ant.vy = 0;
+              continue;
+            }
+            ant.sprite.setPosition(ant.sprite.x + sm.dx, ant.sprite.y + sm.dy);
+            this.clampSpriteToPlaza(ant.sprite, true);
+            this.applyAnimalFlip(ant.sprite, ant, tx < 0);
+            this.syncAntCargoPose(ant);
+            if (
+              deliversLeft > 0 &&
+              Math.hypot(mh.x - ant.sprite.x, mh.y - ant.sprite.y) < deliverD
+            ) {
+              deliversLeft -= 1;
+              this.deliverAntCargoAtManhole(ant, mh, now);
+            }
+            continue;
+          }
+
+          if (this.isAntRoachWarFighting()) {
+            const prey = this.nearestLiveRoachForWar(ant.sprite.x, ant.sprite.y);
+            if (prey?.sprite?.active) {
+              tx = prey.sprite.x - ant.sprite.x;
+              ty = prey.sprite.y - ant.sprite.y;
+              const speed = ANT_SPEED * ANT_ROACH_WAR_SPEED_MULT * ANIMAL_SPEED_MULT;
+              const sm = this.smoothSteer(ant, tx, ty, speed, dt, ANIMAL_STEER_ACCEL * 2);
+              if (Number.isFinite(sm.dx) && Number.isFinite(sm.dy)) {
+                ant.sprite.setPosition(ant.sprite.x + sm.dx, ant.sprite.y + sm.dy);
+                this.clampSpriteToPlaza(ant.sprite, true);
+                this.applyAnimalFlip(ant.sprite, ant, tx < 0);
+              }
+              continue;
+            }
+          }
+
+          let food = ant._haulTarget || null;
+          const foodGone =
+            !food ||
+            (food.kind === "apple" && (!food.ap?.sprite?.active || food.ap.claimedByAnt)) ||
+            (food.kind === "shrimp" &&
+              (!food.site?.dead || !food.site.npc?.active || food.site.antHaul)) ||
+            (food.kind === "fishEgg" && (!food.egg?.sprite?.active || food.egg.claimedByAnt)) ||
+            (food.kind === "roach" &&
+              (!food.ro?.sprite?.active || food.ro.claimedByAnt));
+          if (hasFood && (foodGone || now >= (ant._nextFoodSeekAt || 0))) {
+            food = this.findAntHaulTarget(ant.sprite.x, ant.sprite.y, haulCandidates);
+            ant._haulTarget = food;
+            ant._nextFoodSeekAt = now + ANT_FOOD_RETARGET_MS + Math.random() * 120;
+          } else if (!hasFood) {
+            food = null;
+            ant._haulTarget = null;
+          }
+
+          if (food) {
+            const pos = this.antFoodWorldPos(food);
+            if (!pos || !Number.isFinite(pos.x) || !Number.isFinite(pos.y)) {
+              ant._haulTarget = null;
+              continue;
+            }
+            tx = pos.x - ant.sprite.x;
+            ty = pos.y - ant.sprite.y;
+            const speed = ANT_SPEED * ANT_SEEK_SPEED_MULT * ANIMAL_SPEED_MULT;
+            const sm = this.smoothSteer(ant, tx, ty, speed, dt, ANIMAL_STEER_ACCEL * 1.9);
+            if (!Number.isFinite(sm.dx) || !Number.isFinite(sm.dy)) {
+              ant.vx = 0;
+              ant.vy = 0;
+              continue;
+            }
+            ant.sprite.setPosition(ant.sprite.x + sm.dx, ant.sprite.y + sm.dy);
+            this.clampSpriteToPlaza(ant.sprite, true);
+            this.applyAnimalFlip(ant.sprite, ant, tx < 0);
+            const distNow = Math.hypot(pos.x - ant.sprite.x, pos.y - ant.sprite.y);
+            if (distNow < pickupD) {
+              if (food.kind === "apple" && food.ap && !food.ap.claimedByAnt) {
+                food.ap.claimedByAnt = ant;
+                ant.carry = { kind: "apple", ap: food.ap };
+                ant._haulTarget = null;
+                this.syncAntCargoPose(ant);
+              } else if (food.kind === "shrimp" && food.site && !food.site.antHaul) {
+                food.site.antHaul = ant;
+                ant.carry = { kind: "shrimp", site: food.site };
+                ant._haulTarget = null;
+                this.syncAntCargoPose(ant);
+              } else if (food.kind === "fishEgg" && food.egg && !food.egg.claimedByAnt) {
+                if (food.egg.stallPull) this.cancelStallShrimpEggPull(food.egg, true);
+                food.egg.claimedByAnt = ant;
+                ant.carry = { kind: "fishEgg", egg: food.egg };
+                ant._haulTarget = null;
+                this.syncAntCargoPose(ant);
+              } else if (food.kind === "roach" && food.ro?.sprite?.active && !food.ro.claimedByAnt) {
+                food.ro.claimedByAnt = ant;
+                ant.carry = { kind: "roach", ro: food.ro };
+                ant._haulTarget = null;
+                this.syncAntCargoPose(ant);
+              } else {
+                ant._haulTarget = null;
+                ant._nextFoodSeekAt = now;
+              }
+            }
+            continue;
+          }
+
+          if (now > ant.retargetAt) {
+            ant.retargetAt = now + 1200 + Math.random() * 1600;
+            this.pickAntTarget(ant);
+          }
+          tx = ant.target.x - ant.sprite.x;
+          ty = ant.target.y - ant.sprite.y;
+          let len = Math.hypot(tx, ty) || 1;
+          if (len < 4) {
+            this.pickAntTarget(ant);
+            tx = ant.target.x - ant.sprite.x;
+            ty = ant.target.y - ant.sprite.y;
+            len = Math.hypot(tx, ty) || 1;
+          }
+          const sm = this.smoothSteer(ant, tx, ty, ANT_SPEED * ANIMAL_SPEED_MULT, dt);
+          if (!Number.isFinite(sm.dx) || !Number.isFinite(sm.dy)) {
+            ant.vx = 0;
+            ant.vy = 0;
+            continue;
+          }
+          ant.sprite.setPosition(ant.sprite.x + sm.dx, ant.sprite.y + sm.dy);
+          this.clampSpriteToPlaza(ant.sprite);
+          this.applyAnimalFlip(ant.sprite, ant, tx < 0);
+          if (this.bounceIfNearFountain(ant.sprite, now)) {
+            ant.home.x = ant.sprite.x;
+            ant.home.y = ant.sprite.y;
+            this.pickAntTarget(ant);
+            ant.retargetAt = now + 500;
+          }
+          this.clampSpriteToPlaza(ant.sprite);
+        } catch {
+          try {
+            this.clearAntCarry(ant);
+          } catch {
+            /* noop */
+          }
+        }
+      }
+
+      this.ensureAntPopulation(now);
+      this.flushPendingAntSpawns();
+    }
+
     createChickenAt(x, y) {
       const sprite = this.add
         .image(x, y, "chicken")
@@ -4197,6 +5446,7 @@ function initWorld() {
       if (!ch) return;
       const idx = this.chickens.indexOf(ch);
       if (idx < 0) return;
+      if (this.dog?.commandPrey?.sprite === ch.sprite) this.grantPlazaAchievement("bruce");
       if (this.dog?.chaseChicken === ch) this.dog.chaseChicken = null;
       if (this.dog?.commandPrey?.sprite === ch.sprite) this.dog.commandPrey = null;
       for (const w of this.weasels || []) {
@@ -4312,7 +5562,31 @@ function initWorld() {
           this.clampSpriteToPlaza(sprite);
         }
         body.retargetAt = this.time.now + 200;
+        this.checkDraggedAnimalAchievements(sprite, body);
       });
+    }
+
+    grantPlazaAchievement(id) {
+      try {
+        unlockPlazaAchievement(id);
+      } catch {
+        /* noop */
+      }
+    }
+
+    checkDraggedAnimalAchievements(sprite, body = null) {
+      if (!sprite?.active) return;
+      const r = this.fountainTeleportRadius || 34;
+      if (Math.hypot(sprite.x, sprite.y) < r) {
+        this.grantPlazaAchievement("fly");
+        this.bounceIfNearFountain(sprite, this.time.now);
+      }
+      if (sprite.texture?.key === "chicken" && (body?.penned || sprite._fencePenned)) {
+        this.grantPlazaAchievement("taunt");
+      }
+      if (sprite.texture?.key === "sheep") {
+        body._penEatQuest = !!(body?.penned || sprite._fencePenned);
+      }
     }
 
     lawnPatchHasGrass(patch, sheep = null) {
@@ -4392,6 +5666,25 @@ function initWorld() {
       return true;
     }
 
+    fencedLawnTilesAllEaten() {
+      let any = false;
+      for (const patch of this.lawnPatches || []) {
+        if (!patch.fenced) continue;
+        for (const tile of patch.tiles || []) {
+          if (!tile.sprite?.active) continue;
+          any = true;
+          if (!tile.eaten) return false;
+        }
+      }
+      return any;
+    }
+
+    tryGrantSheepPenEatAchievement(sh) {
+      if (!sh?.penned || !sh._penEatQuest) return;
+      if (!this.fencedLawnTilesAllEaten()) return;
+      this.grantPlazaAchievement("leteat");
+    }
+
     updateLawnRegrowth(now) {
       for (const patch of this.lawnPatches || []) {
         for (const tile of patch.tiles) {
@@ -4425,6 +5718,7 @@ function initWorld() {
           if (grass.dist < SHEEP_EAT_DIST && now >= (sh.nextEatAt || 0)) {
             if (this.eatLawnTile(grass.tile, now)) {
               sh.nextEatAt = now + SHEEP_EAT_COOLDOWN_MS;
+              this.tryGrantSheepPenEatAchievement(sh);
             }
           }
         } else {
@@ -4861,6 +6155,7 @@ function initWorld() {
           if (Math.abs(sm.vx) > 1.2) sp.setFlipX(sm.vx < 0);
         } else {
           let huntRoach = null;
+          let huntAnt = null;
           let huntApple = null;
           let bestD = CHICKEN_ROACH_HUNT_RANGE;
           for (const ro of this.roaches || []) {
@@ -4869,6 +6164,17 @@ function initWorld() {
             if (d < bestD) {
               bestD = d;
               huntRoach = ro;
+              huntAnt = null;
+              huntApple = null;
+            }
+          }
+          for (const ant of this.ants || []) {
+            if (!ant.sprite?.active || this.isAntCarrying(ant)) continue;
+            const d = Math.hypot(ant.sprite.x - x, ant.sprite.y - y);
+            if (d < bestD) {
+              bestD = d;
+              huntRoach = null;
+              huntAnt = ant;
               huntApple = null;
             }
           }
@@ -4876,11 +6182,20 @@ function initWorld() {
           if (landApple && landApple.dist < bestD) {
             bestD = landApple.dist;
             huntRoach = null;
+            huntAnt = null;
             huntApple = landApple;
           }
-          if (huntRoach || huntApple) {
-            const tx = huntRoach ? huntRoach.sprite.x - x : huntApple.ap.sprite.x - x;
-            const ty = huntRoach ? huntRoach.sprite.y - y : huntApple.ap.sprite.y - y;
+          if (huntRoach || huntAnt || huntApple) {
+            const tx = huntRoach
+              ? huntRoach.sprite.x - x
+              : huntAnt
+                ? huntAnt.sprite.x - x
+                : huntApple.ap.sprite.x - x;
+            const ty = huntRoach
+              ? huntRoach.sprite.y - y
+              : huntAnt
+                ? huntAnt.sprite.y - y
+                : huntApple.ap.sprite.y - y;
             const sm = this.smoothSteer(ch, tx, ty, CHICKEN_SPEED * 1.15 * ANIMAL_SPEED_MULT, dt);
             x += sm.dx;
             y += sm.dy;
@@ -4888,6 +6203,8 @@ function initWorld() {
             if (huntRoach && bestD < CHICKEN_ROACH_EAT_DIST) {
               const ri = this.roaches.indexOf(huntRoach);
               if (ri >= 0) this.removeRoachAt(ri, now);
+            } else if (huntAnt && bestD < ANT_EAT_DIST) {
+              this.killAnt(huntAnt);
             } else if (huntApple && bestD < APPLE_EAT_DIST) {
               this.removeFallenAppleAt(huntApple.index);
             }
@@ -4942,9 +6259,13 @@ function initWorld() {
         if (Math.abs(sm.vx) > 1.2) sp.setFlipX(sm.vx > 0);
         const catchD = Math.hypot(cmdPrey.x - x, cmdPrey.y - y);
         if (catchD < (cmdPrey.kind === "chicken" ? DOG_CHICKEN_CATCH_DIST : DOG_CATCH_DIST)) {
-          this.dogConsumePrey(cmdPrey.kind, cmdPrey.sprite, now);
+          const ateKind = cmdPrey.kind;
+          const ate = this.dogConsumePrey(ateKind, cmdPrey.sprite, now);
           dog.commandPrey = null;
-          if (cmdPrey.kind === "chicken") {
+          if (ate && (ateKind === "mouse" || ateKind === "lizard" || ateKind === "roach")) {
+            this.grantPlazaAchievement("bruce");
+          }
+          if (ateKind === "chicken") {
             dog.chaseKind = null;
             dog.restUntil = Math.max(dog.restUntil || 0, now + 2500);
           }
@@ -5086,6 +6407,65 @@ function initWorld() {
           this.mice.splice(mi, 1);
         }
       }
+
+      // 狗碰到蟑螂立刻吃掉，并报一次广场现有动物种类
+      for (let ri = (this.roaches || []).length - 1; ri >= 0; ri--) {
+        const ro = this.roaches[ri];
+        if (!ro.sprite?.active || this.isRoachHauledByAnt(ro)) continue;
+        if (Math.hypot(ro.sprite.x - sp.x, ro.sprite.y - sp.y) < DOG_MOUSE_EAT_DIST + 2) {
+          if (dog.commandPrey?.sprite === ro.sprite) dog.commandPrey = null;
+          this.removeRoachAt(ri, now);
+          this.showPlazaAnimalCensus(now);
+        }
+      }
+    }
+
+    listLivePlazaAnimalKinds() {
+      const kinds = [];
+      const push = (ok, name) => {
+        if (ok) kinds.push(name);
+      };
+      const anySprite = (list) => (list || []).some((it) => it?.sprite?.active);
+      push(!!this.dog?.sprite?.active, "狗");
+      push(anySprite(this.cats), "猫");
+      push(anySprite(this.lizards), "蜥蜴");
+      push(anySprite(this.mice), "老鼠");
+      push(anySprite(this.roaches), "蟑螂");
+      push(anySprite(this.snakes), "蛇");
+      push(anySprite(this.frogs), "牛蛙");
+      push(anySprite(this.sparrows), "麻雀");
+      push(anySprite(this.chickens), "鸡");
+      push(anySprite(this.ants), "蚂蚁");
+      push(anySprite(this.sheep), "羊");
+      push(anySprite(this.weasels), "黄鼠狼");
+      const shrimpLive = (this.stallShrimpSites || []).some(
+        (s) => !s.dead && (s.npc?.active || s.incoming?.npc?.active),
+      );
+      push(shrimpLive, "小龙虾");
+      push(anySprite(this.pondFish), "小鱼");
+      return kinds;
+    }
+
+    showPlazaAnimalCensus(now) {
+      if (now < (this._nextAnimalCensusAt || 0)) return;
+      this._nextAnimalCensusAt = now + 4500;
+      const kinds = this.listLivePlazaAnimalKinds();
+      const banner = this._animalCensusBanner;
+      if (!banner?.active) return;
+      const n = kinds.length;
+      banner.setText(n ? `广场现有 ${n} 种动物：${kinds.join("、")}` : "广场现在没有动物");
+      banner.setVisible(true);
+      this.tweens.killTweensOf(banner);
+      banner.setAlpha(1);
+      this.tweens.add({
+        targets: banner,
+        alpha: 0,
+        delay: 2800,
+        duration: 500,
+        onComplete: () => {
+          if (banner.active) banner.setVisible(false);
+        },
+      });
     }
 
     clampSpriteFlying(sprite) {
@@ -5305,16 +6685,29 @@ function initWorld() {
 
     update(_t, delta) {
       const now = this.time.now;
-      const dt = Math.min((delta || 16) / 1000, 0.055);
+      // 帧率掉时若 dt 封顶过低，全场会“越来越慢”；略放宽并保留上限防穿透
+      const dt = Math.min((delta || 16) / 1000, 0.1);
       this.updatePlazaPoolFlow(now);
       this.updateFountainWater(now);
       this.updateStallShrimpEggPulls(now, dt);
       this.updateStallShrimpCooloffs(now, dt);
+      this.updateStallShrimpWalkHome(now, dt);
       this.updateDeadStallShrimpSites(now);
       this.updateStallShrimpReplacements(now, dt);
       this.updateFallenApples(now, dt);
       this.updatePondFish(now, dt);
       this.updateRoachRoyale(now);
+      // 蚂蚁独立更新：避免卡在猫逻辑之后；单帧异常也不拖死整张地图
+      try {
+        this.updateAnts(now, dt);
+        this.updateAntRoachWar(now);
+      } catch (err) {
+        try {
+          console.warn("updateAnts failed", err);
+        } catch {
+          /* noop */
+        }
+      }
       this.syncPrimaryCat();
       const catEntries = this.activeCatEntries();
       if (!catEntries.length) return;
@@ -5658,6 +7051,30 @@ function initWorld() {
       const ROACH_SEPARATE_ACCEL = 6.5;
 
       for (const ro of this.roaches) {
+        if (this.isRoachHauledByAnt(ro)) continue;
+        if (this.isAntRoachWarFighting()) {
+          const prey = this.nearestLiveAntForWar(ro.sprite.x, ro.sprite.y);
+          let rx = ro.sprite.x;
+          let ry = ro.sprite.y;
+          if (prey?.sprite?.active) {
+            const tx = prey.sprite.x - rx;
+            const ty = prey.sprite.y - ry;
+            const sm = this.smoothSteer(
+              ro,
+              tx,
+              ty,
+              8.2 * ANT_ROACH_WAR_SPEED_MULT * ANIMAL_SPEED_MULT,
+              dt,
+              ANIMAL_STEER_ACCEL * 1.6,
+            );
+            rx += sm.dx;
+            ry += sm.dy;
+            ro.sprite.setFlipX(tx < 0);
+          }
+          ro.sprite.setPosition(rx, ry);
+          this.clampSpriteToPlaza(ro.sprite);
+          continue;
+        }
         if (this.tryManholeTeleportRoach(ro, now)) continue;
 
         const roachPanic = this.roachSeeksManhole(ro, now);
@@ -5800,7 +7217,7 @@ function initWorld() {
         this.clampSpriteToPlaza(ro.sprite);
       }
 
-      if (this.roaches.length === 1) {
+      if (this.roaches.length === 1 && !this._antRoachWarLockBrood && !this.isAntRoachWarFighting()) {
         const sole = this.roaches[0];
         if (sole?.sprite?.active) {
           const room = MAX_ROACHES - this.roaches.length;
@@ -5822,7 +7239,12 @@ function initWorld() {
         }
       }
 
-      if (now > this.roachBreedLock && this.roaches.length < MAX_ROACHES) {
+      if (
+        now > this.roachBreedLock &&
+        this.roaches.length < MAX_ROACHES &&
+        !this._antRoachWarLockBrood &&
+        !this.isAntRoachWarFighting()
+      ) {
         outerRoach: for (let i = 0; i < this.roaches.length; i++) {
           for (let j = i + 1; j < this.roaches.length; j++) {
             const ra = this.roaches[i].sprite;
@@ -6241,6 +7663,7 @@ function initWorld() {
         const liz = lz.sprite;
 
         let chaseRoach = null;
+        let chaseAnt = null;
         if (royale && this.roaches.length) {
           chaseRoach = this.findNearestRoachPrey(liz.x, liz.y);
         } else {
@@ -6253,14 +7676,24 @@ function initWorld() {
               chaseRoach = ro;
             }
           }
+          if (!royale) {
+            chaseAnt = this.findNearestAntPrey(liz.x, liz.y, ROACH_AGRO);
+            if (chaseAnt && chaseRoach) {
+              const ad = Math.hypot(chaseAnt.sprite.x - liz.x, chaseAnt.sprite.y - liz.y);
+              const rd = Math.hypot(chaseRoach.sprite.x - liz.x, chaseRoach.sprite.y - liz.y);
+              if (ad <= rd) chaseRoach = null;
+              else chaseAnt = null;
+            }
+          }
         }
 
         let lx = liz.x;
         let ly = liz.y;
 
-        if (chaseRoach) {
-          const tx = chaseRoach.sprite.x - lx;
-          const ty = chaseRoach.sprite.y - ly;
+        if (chaseRoach || chaseAnt) {
+          const preySp = chaseRoach ? chaseRoach.sprite : chaseAnt.sprite;
+          const tx = preySp.x - lx;
+          const ty = preySp.y - ly;
           const sm = this.smoothSteer(lz, tx, ty, V_LIZARD_CHASE_ROACH * ANIMAL_SPEED_MULT, dt);
           lx += sm.dx;
           ly += sm.dy;
@@ -6309,6 +7742,14 @@ function initWorld() {
             break;
           }
         }
+        for (let ai = (this.ants || []).length - 1; ai >= 0; ai--) {
+          const ant = this.ants[ai];
+          if (!ant.sprite?.active || this.isAntCarrying(ant)) continue;
+          if (Math.hypot(ant.sprite.x - lx, ant.sprite.y - ly) < ANT_EAT_DIST) {
+            this.removeAntAt(ai);
+            break;
+          }
+        }
 
         liz.setPosition(lx, ly);
         this.clampSpriteToPlaza(liz);
@@ -6316,6 +7757,12 @@ function initWorld() {
           const still = this.roaches.includes(chaseRoach);
           if (still) {
             const tx = chaseRoach.sprite.x - lx;
+            liz.setFlipX(tx > 0);
+          }
+        } else if (chaseAnt) {
+          const still = this.ants.includes(chaseAnt);
+          if (still) {
+            const tx = chaseAnt.sprite.x - lx;
             liz.setFlipX(tx > 0);
           }
         }
@@ -6393,6 +7840,15 @@ function initWorld() {
               bestFd = d;
               preyX = ro.sprite.x;
               preyY = ro.sprite.y;
+            }
+          }
+          for (const ant of this.ants || []) {
+            if (!ant.sprite?.active || this.isAntCarrying(ant)) continue;
+            const d = Math.hypot(ant.sprite.x - fx, ant.sprite.y - fy);
+            if (d < bestFd) {
+              bestFd = d;
+              preyX = ant.sprite.x;
+              preyY = ant.sprite.y;
             }
           }
           for (const lz of this.lizards) {
@@ -6482,6 +7938,17 @@ function initWorld() {
               }
             }
           }
+          if (!ate) {
+            for (let ai = (this.ants || []).length - 1; ai >= 0; ai--) {
+              const ant = this.ants[ai];
+              if (!ant.sprite?.active || this.isAntCarrying(ant)) continue;
+              if (Math.hypot(ant.sprite.x - fp.x, ant.sprite.y - fp.y) < FROG_EAT_DIST) {
+                this.removeAntAt(ai);
+                ate = true;
+                break;
+              }
+            }
+          }
           if (!ate && !royale) {
             for (let li = this.lizards.length - 1; li >= 0; li--) {
               const lz = this.lizards[li];
@@ -6560,10 +8027,13 @@ function initWorld() {
             sv.retargetAt = now + 700 + Math.random() * 900;
             if (
               !fleeing &&
-              (this.roaches.length || this.fallenApples?.some((a) => a.landed && !a.inWater)) &&
+              (this.roaches.length ||
+                this.ants?.length ||
+                this.fallenApples?.some((a) => a.landed && !a.inWater)) &&
               Math.random() < (royale ? 1 : 0.28)
             ) {
               let bestRo = null;
+              let bestAnt = null;
               let bestRd = royale
                 ? SPARROW_ROACH_HUNT_RANGE * ROACH_ROYALE_PREDATOR_AGRO_MULT
                 : SPARROW_ROACH_HUNT_RANGE;
@@ -6573,6 +8043,18 @@ function initWorld() {
                 if (d < bestRd) {
                   bestRd = d;
                   bestRo = ro;
+                  bestAnt = null;
+                }
+              }
+              if (!royale) {
+                for (const ant of this.ants || []) {
+                  if (!ant.sprite?.active || this.isAntCarrying(ant)) continue;
+                  const d = Math.hypot(ant.sprite.x - sx, ant.sprite.y - sy);
+                  if (d < bestRd) {
+                    bestRd = d;
+                    bestRo = null;
+                    bestAnt = ant;
+                  }
                 }
               }
               const flyApple = this.findNearestLandApple(
@@ -6580,16 +8062,17 @@ function initWorld() {
                 sy,
                 royale ? SPARROW_ROACH_HUNT_RANGE * ROACH_ROYALE_PREDATOR_AGRO_MULT : SPARROW_ROACH_HUNT_RANGE,
               );
-              if (flyApple && (!bestRo || flyApple.dist < bestRd)) {
+              if (flyApple && ((!bestRo && !bestAnt) || flyApple.dist < bestRd)) {
                 sv.mode = "land";
                 sv.landUntil = now + SPARROW_LAND_MIN_MS + Math.random() * 1800;
                 sv.target.x = flyApple.ap.sprite.x;
                 sv.target.y = flyApple.ap.sprite.y;
-              } else if (bestRo) {
+              } else if (bestRo || bestAnt) {
+                const prey = bestRo || bestAnt;
                 sv.mode = "land";
                 sv.landUntil = now + SPARROW_LAND_MIN_MS + Math.random() * 1800;
-                sv.target.x = bestRo.sprite.x;
-                sv.target.y = bestRo.sprite.y;
+                sv.target.x = prey.sprite.x;
+                sv.target.y = prey.sprite.y;
               } else {
                 this.pickSparrowFlyTarget(sv);
               }
@@ -6635,6 +8118,7 @@ function initWorld() {
 
         if (!flying) {
           let chaseRo = null;
+          let chaseAnt = null;
           let chaseApple = null;
           let bestRd = royale
             ? SPARROW_ROACH_HUNT_RANGE * ROACH_ROYALE_PREDATOR_AGRO_MULT
@@ -6645,12 +8129,26 @@ function initWorld() {
             if (d < bestRd) {
               bestRd = d;
               chaseRo = ro;
+              chaseAnt = null;
               chaseApple = null;
+            }
+          }
+          if (!royale) {
+            for (const ant of this.ants || []) {
+              if (!ant.sprite?.active || this.isAntCarrying(ant)) continue;
+              const d = Math.hypot(ant.sprite.x - sx, ant.sprite.y - sy);
+              if (d < bestRd) {
+                bestRd = d;
+                chaseRo = null;
+                chaseAnt = ant;
+                chaseApple = null;
+              }
             }
           }
           const landApple = this.findNearestLandApple(sx, sy, bestRd);
           if (landApple && landApple.dist < bestRd) {
             chaseRo = null;
+            chaseAnt = null;
             chaseApple = landApple;
             bestRd = landApple.dist;
           }
@@ -6668,6 +8166,16 @@ function initWorld() {
                 sv.landUntil = now + 400;
                 break;
               }
+            }
+          } else if (chaseAnt) {
+            tx = chaseAnt.sprite.x - sx;
+            ty = chaseAnt.sprite.y - sy;
+            len = Math.hypot(tx, ty) || 1;
+            sx += (tx / len) * (SPARROW_LAND_SPEED + 6) * dt;
+            sy += (ty / len) * (SPARROW_LAND_SPEED + 6) * dt;
+            if (Math.hypot(chaseAnt.sprite.x - sx, chaseAnt.sprite.y - sy) < ANT_EAT_DIST) {
+              this.killAnt(chaseAnt);
+              sv.landUntil = now + 400;
             }
           } else if (chaseApple) {
             tx = chaseApple.ap.sprite.x - sx;
@@ -6701,9 +8209,9 @@ function initWorld() {
       this.updateDog(now, dt);
 
       for (const npc of this.boothNpcs) {
-        if (!npc?.active) continue;
+        if (!npc?.active || npc._dragging) continue;
         const site = this.stallShrimpSiteForNpc(npc);
-        if (site?.dead || site?.incoming?.npc === npc) continue;
+        if (site?.dead || site?.antHaul || site?.incoming?.npc === npc || site?.walkHome) continue;
         if (site?.cooloff || site?.incoming) {
           this.clampSpriteToPlaza(npc, site?.cooloff?.phase === "in_pool");
           continue;
@@ -6780,6 +8288,20 @@ function initWorld() {
         .setOrigin(0.5, 0)
         .setScrollFactor(0)
         .setDepth(2000)
+        .setVisible(false);
+      this._animalCensusBanner = this.add
+        .text(0, -hh + 92 * PS, "", {
+          fontFamily: '"ZCOOL KuaiLe", "Microsoft YaHei", sans-serif',
+          fontSize: `${Math.round(12 * PS)}px`,
+          color: "#fff6e8",
+          backgroundColor: "rgba(26, 22, 18, 0.78)",
+          padding: { x: 10, y: 6 },
+          wordWrap: { width: Math.round(520 * PS) },
+          align: "center",
+        })
+        .setOrigin(0.5, 0)
+        .setScrollFactor(0)
+        .setDepth(2001)
         .setVisible(false);
 
       // Golden Hour tiles（略加噪点边）
@@ -7059,6 +8581,19 @@ function initWorld() {
         g.fillStyle(0xfff2d8, 1).fillRect(7, 2, 2, 1);
         g.fillStyle(0x1a0c0a, 1).fillRect(10, 0, 2, 2);
         g.fillRect(11, 5, 2, 2);
+      });
+      // 蚂蚁：极小黑褐三段身 + 细腿，搬食物进井盖
+      makeTexture(this, "ant", 10, 6, (g) => {
+        g.fillStyle(0x1a120e, 1).fillEllipse(2.2, 3, 2.4, 2.1);
+        g.fillStyle(0x2a1c14, 1).fillEllipse(5, 3, 2.2, 1.9);
+        g.fillStyle(0x140e0a, 1).fillEllipse(7.6, 3, 3, 2.3);
+        g.fillStyle(0x0a0806, 1).fillRect(3.5, 0.4, 0.8, 1.4);
+        g.fillRect(5.2, 0.3, 0.8, 1.5);
+        g.fillRect(6.8, 0.5, 0.8, 1.3);
+        g.fillRect(3.5, 4.2, 0.8, 1.4);
+        g.fillRect(5.2, 4.3, 0.8, 1.4);
+        g.fillRect(6.8, 4.1, 0.8, 1.3);
+        g.fillStyle(0x3a2820, 1).fillRect(0.6, 2.4, 1.2, 0.7);
       });
       makeTexture(this, "roachRoyaleTrophy", 14, 16, (g) => {
         g.fillStyle(0xf4a900, 1).fillRect(3, 0, 8, 3);
@@ -7376,10 +8911,20 @@ function initWorld() {
       zebra(0, -52 * PS, false);
       zebra(0, 52 * PS, false);
 
-      // 井盖（坐标同步记入 manholes，供鼠蟑地下通道）
+      // 井盖：鼠蟑地下通道入口；轻点（非拖拽）打开全广场唯一蚂蚁仓库（不用 interactive，避免挡住拖地图）
       this.manholes = [];
+      this.antWarehouse = {
+        appleCount: 0,
+        shrimpCount: 0,
+        fishEggCount: 0,
+        antCount: 0,
+        roachCount: 0,
+        haulLog: [],
+      };
+      this._mapPointerDown = null;
       const manhole = (x, y) => {
-        this.manholes.push({ x, y });
+        const entry = { x, y };
+        this.manholes.push(entry);
         const m = this.add.circle(x, y, 7 * PS, 0x1e1a18, 0.65).setDepth(3);
         this.add.circle(x, y, 5 * PS, 0x2e2824, 0.85).setDepth(3);
         return m;
@@ -7607,7 +9152,7 @@ function initWorld() {
           (80 + (ci % 3) * 12) * PS,
         ];
         const pos = this.clampPosToPlaza(cx, cy);
-        const ce = this.createCatAt(pos.x, pos.y);
+        const ce = this.createCatAt(pos.x, pos.y, ci === 1 ? 0x2b2b38 : null);
         ce.nextFishAt = this.time.now + CAT_FISH_INTERVAL_MS + ci * 8000;
         this.cats.push(ce);
       }
@@ -7734,6 +9279,21 @@ function initWorld() {
       }
       this._nextChickenLayAt = this.time.now + 18000;
 
+      this.ants = [];
+      const antPerManhole = 7;
+      for (let mi = 0; mi < (this.manholes || []).length; mi++) {
+        const h = this.manholes[mi];
+        for (let ai = 0; ai < antPerManhole && this.ants.length < MAX_ANTS; ai++) {
+          const ang = (ai / antPerManhole) * Math.PI * 2 + mi * 0.4;
+          const rad = 10 + (ai % 3) * 8;
+          const c = this.clampPosToPlaza(h.x + Math.cos(ang) * rad, h.y + Math.sin(ang) * rad);
+          const ant = this.createAntAt(c.x, c.y);
+          this.pickAntTarget(ant);
+          ant.retargetAt = this.time.now + ai * 120 + mi * 80;
+          this.ants.push(ant);
+        }
+      }
+
       this.sheep = [];
       const sheepSpawns = [
         [-160 * PS, -100 * PS],
@@ -7794,7 +9354,7 @@ function initWorld() {
       /** 捏合缩放：记下双指落下的初始间距与 zoom，按比例连续映射（单指拖拽平移） */
       this._pinchBaseline = null;
 
-      this.input.on("pointermove", () => {
+      this.input.on("pointermove", (pointer) => {
         const c = this.cameras.main;
         /** @type {Phaser.Input.Pointer[]} */
         const pts =
@@ -7804,6 +9364,7 @@ function initWorld() {
         const nDown = pts.length;
 
         if (nDown >= 2) {
+          this._mapPointerDown = null;
           const ax = pts[0].x;
           const ay = pts[0].y;
           const bx = pts[1].x;
@@ -7824,21 +9385,55 @@ function initWorld() {
         this._pinchBaseline = null;
 
         if (nDown !== 1) return;
-        if (this._draggingFenceAnimal) return;
+        // 拖拽超时未收到 dragend 时勿永久锁死相机
+        if (this._draggingFenceAnimal) {
+          if (!pointer?.isDown) this._draggingFenceAnimal = false;
+          else return;
+        }
+        if (this.stallShrimpSites?.some((s) => s.npc?._dragging)) return;
         const q = pts[0];
-        c.scrollX -= (q.x - q.prevPosition.x) / c.zoom;
-        c.scrollY -= (q.y - q.prevPosition.y) / c.zoom;
+        const dx = q.x - q.prevPosition.x;
+        const dy = q.y - q.prevPosition.y;
+        if (this._mapPointerDown && !this._mapPointerDown.dragged) {
+          const moved = Math.hypot(q.x - this._mapPointerDown.x, q.y - this._mapPointerDown.y);
+          if (moved > 7) this._mapPointerDown.dragged = true;
+        }
+        c.scrollX -= dx / c.zoom;
+        c.scrollY -= dy / c.zoom;
       });
 
-      this.input.on("pointerup", () => {
+      this.input.on("pointerup", (pointer) => {
         const pts =
           typeof this.input.manager?.pointers?.filter === "function"
             ? this.input.manager.pointers.filter((pt) => pt && pt.isDown)
             : [];
         if (pts.length < 2) this._pinchBaseline = null;
+        this._draggingFenceAnimal = false;
+
+        const down = this._mapPointerDown;
+        this._mapPointerDown = null;
+        if (!down || down.dragged || this.dogSelectArmed) return;
+        if (pointer && down.id != null && pointer.id !== down.id) return;
+        const worldX = pointer?.worldX;
+        const worldY = pointer?.worldY;
+        if (worldX == null || worldY == null) return;
+        const hitR = 12 * (this.plazaScale || 1);
+        for (let i = 0; i < (this.manholes || []).length; i++) {
+          const h = this.manholes[i];
+          if (Math.hypot(worldX - h.x, worldY - h.y) <= hitR) {
+            openAntWarehouseDrawer();
+            break;
+          }
+        }
       });
 
-      this.input.on("pointerdown", (_pointer, currentlyOver) => {
+      this.input.on("pointerdown", (pointer, currentlyOver) => {
+        this._mapPointerDown = {
+          id: pointer?.id,
+          x: pointer?.x ?? 0,
+          y: pointer?.y ?? 0,
+          dragged: false,
+        };
         if (!this.dogSelectArmed) return;
         if (currentlyOver && currentlyOver.length) return;
         this.setDogSelectArmed(false);
@@ -7929,6 +9524,7 @@ function initWorld() {
               z === "avatar" ? 0xffb8c6 : z === "forum" ? 0xffe8a0 : z === "vote" ? 0xa8c8e8 : 0xffffff,
           };
           npc._stallSite = siteObj;
+          this.wireStallShrimpDraggable(npc);
           this.stallShrimpSites.push(siteObj);
         }
 
@@ -7986,6 +9582,7 @@ function initWorld() {
           stallTint: shrimpTint,
         };
         npc._stallSite = siteObj;
+        this.wireStallShrimpDraggable(npc);
         this.stallShrimpSites.push(siteObj);
         this.booths.push(npc);
 
@@ -8307,6 +9904,7 @@ function initWorld() {
 
 window.addEventListener("DOMContentLoaded", async () => {
   worldState = initWorld();
+  renderPlazaAchievementSidebar();
   wireStallZoneFilter();
   document.getElementById("refreshBtn").onclick = refresh;
   document.getElementById("moreBtn").onclick = () => loadFeed({ append: true });
@@ -8519,6 +10117,48 @@ window.addEventListener("DOMContentLoaded", async () => {
 
   setTimeout(updateRoachRoyaleHud, 200);
   setInterval(updateRoachRoyaleHud, 500);
+
+  const antWarehousePanel = document.getElementById("antWarehousePanel");
+  const antWarehouseApples = document.getElementById("antWarehouseApples");
+  const antWarehouseShrimp = document.getElementById("antWarehouseShrimp");
+  const antWarehouseEggs = document.getElementById("antWarehouseEggs");
+  const antWarehouseAnts = document.getElementById("antWarehouseAnts");
+  const antWarehouseRoaches = document.getElementById("antWarehouseRoaches");
+  const antWarehouseHint = document.getElementById("antWarehouseHint");
+  const antWarehouseBadge = document.getElementById("antWarehouseBadge");
+
+  function syncAntWarehouseHud() {
+    const wh = sceneRef?.antWarehouse;
+    const appleN = wh?.appleCount || 0;
+    const shrimpN = wh?.shrimpCount || 0;
+    const eggN = wh?.fishEggCount || 0;
+    const eatenN = wh?.antCount || 0;
+    const roachN = wh?.roachCount || 0;
+    const foodN = appleN + shrimpN + eggN;
+    const antsN = (sceneRef?.ants || []).filter((a) => a?.sprite?.active).length;
+    if (antWarehouseApples) antWarehouseApples.textContent = String(appleN);
+    if (antWarehouseShrimp) antWarehouseShrimp.textContent = String(shrimpN);
+    if (antWarehouseEggs) antWarehouseEggs.textContent = String(eggN);
+    if (antWarehouseAnts) antWarehouseAnts.textContent = String(eatenN);
+    if (antWarehouseRoaches) antWarehouseRoaches.textContent = String(roachN);
+    if (antWarehouseBadge) antWarehouseBadge.textContent = antsN ? `${antsN} 蚁` : "共用";
+    if (antWarehouseHint) {
+      antWarehouseHint.textContent =
+        foodN || eatenN || roachN
+          ? `食物 ${foodN} 件，入仓蚁 ${eatenN}，抢食蟑 ${roachN}。点击卡片或井盖看记录。`
+          : "蚂蚁把食物搬进井盖；抢食的蟑螂会被拖入井盖。点击本卡片或地图井盖可看记录。";
+    }
+    if (antWarehousePanel) {
+      antWarehousePanel.classList.toggle("has-stock", foodN + eatenN + roachN > 0);
+    }
+  }
+
+  window.__syncAntWarehouseHud = syncAntWarehouseHud;
+  if (antWarehousePanel) {
+    antWarehousePanel.addEventListener("click", () => openAntWarehouseDrawer());
+  }
+  setTimeout(syncAntWarehouseHud, 200);
+  setInterval(syncAntWarehouseHud, 500);
 
   await refresh();
 });
